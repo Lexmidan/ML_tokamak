@@ -96,7 +96,7 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float
     Raises:
         ??
     """
-    filename=f"{path}/RIS{ris}_{shot}_t={time}.png" #I conciously decided not to cut the time in the filename at any decimal
+    filename=f"{path}/RIS{ris}_{shot}_t={time:8.3f}.png"
     img = Image.fromarray((frame.data*255).astype('uint8')).convert('RGB')
     img.save(filename, format=None)
     
@@ -114,16 +114,15 @@ def discharge_duration(shot: int, threshold: float = 1e4) -> Tuple[float, float]
     """
 
     # Note: the data are huge ==> caching them for future use would soon deplete our memory => cache=False
-    s = cdbxr.Shot(16504, cache=False) #load the whole shot
-    ipla = s[f"I_plasma:{16504}"] #load current
-    plasma_time = ipla[abs(ipla)>1e4].time.data
+    s = cdbxr.Shot(shot, cache=False) #load the whole shot
+    ipla = s[f"I_plasma:{shot}"] #load current
+    plasma_time = ipla[abs(ipla)>threshold].time.data
     start = plasma_time[0]
     end = plasma_time[-1]
 
-
     return  start, end
 
-def save_ris_images_to_folder(shot: int, path: Path, ris: int):
+def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_discharge_duration=False):
     """Save all images from RIS camera in a given shot to a given folder.
 
     Saves only frames from times when there was a plasma.
@@ -133,12 +132,21 @@ def save_ris_images_to_folder(shot: int, path: Path, ris: int):
         path: Output path. The image files will be saved to subfolder path / {shot}. The subfolder
             will be created if it does not exist.
         ris: Which camera to use? 1 or 2.
+    Returns:
+        filenames: np.array with all the names of saved images
     """
-    data = load_RIS_data(shot, ris)
-    start, end = discharge_duration(shot, 1e4)
-    dem_data=flip_image(demosaic(data)[1].sel(time=slice(start,end)))
+    filenames = np.array([]) #str array with all the names of saved images
+
+    if use_discharge_duration:
+        start, end = discharge_duration(shot, 1e4)
+        dem_data=flip_image(demosaic(data)[1].sel(time=slice(start,end)))
+
+    else:
+        dem_data=flip_image(demosaic(data)[1])
     
     for i,frame in enumerate(dem_data):
-        save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data)
+        filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data)
+        filenames = np.append(filenames,filename)
         if i%50==0:
             print(f'{i}/{len(dem_data)} imgs are saved')
+    return filenames
