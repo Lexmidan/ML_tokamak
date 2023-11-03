@@ -1,8 +1,10 @@
-### Type I ELMs. the ELM repetition frequency νELM increases with heating power. There is
+## Types of ELMS
+
+* Type I ELMs. the ELM repetition frequency νELM increases with heating power. There is
 no detectable magnetic precursor oscillation. However, the level of broadband magnetic
 and density turbulent fluctuations increases prior to a type I ELM. Ideal ballooning
 analysis shows that the plasma edge is always close to the stability limit α ≈ αcrit [7].
-* Type I ELMs appear as isolated sharp bursts on the Dα-signal.
+Type I ELMs appear as isolated sharp bursts on the Dα-signal.
 * Type II ELMs. If, in a DIII-D discharge exhibiting type I ELMs, the shape of the plasma
 cross section is changed towards higher elongation and triangularity, the appearance of
 the ELMs may change: they become more frequent and the magnitude of the Dα-burst
