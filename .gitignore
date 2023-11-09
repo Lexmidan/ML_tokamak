@@ -13,7 +13,7 @@ PyTorch/Data
 # C extensions
 *.so
 *.png
-/runs
+vyzkumny_ukol/runs
 ###########
 
 # Distribution / packaging
