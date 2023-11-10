@@ -44,7 +44,7 @@ def demosaic(data: xr.DataArray) -> np.array:
     b= data[:,1::2,::2]
     g1=data[:,1::2,1::2]
     g2=data[:,::2,::2]
-    g=xr.DataArray(g1.data+g2.data) #don't wanna lose any information. Green will be normalized anyway
+    g=xr.DataArray((g1.data+g2.data)/2) #don't wanna lose any information. Green will be normalized anyway
 
     xar=xr.DataArray([r,g,b], dims=('color', 'time', 'x', 'y'), coords={'color': ['r','g','b'], 'time': data.coords['time'],\
                                                                          'x': np.arange(r.shape[1]), 'y':np.arange(r.shape[2])})
@@ -147,10 +147,8 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_dischar
     else:
         dem_data=flip_image(demosaic(data))
     for frame in tqdm(dem_data, total=len(dem_data)):    # automaticky se zobrazi a bude v prubehu cyklu updatovat progressbar
-    #for i,frame in enumerate(dem_data):
         filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data)
         filenames.append(filename)
-        #if i%50==0:
-            #print(f'{i}/{len(dem_data)} imgs are saved')
+
     return filenames
 
