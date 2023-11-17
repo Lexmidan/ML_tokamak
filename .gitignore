@@ -2,6 +2,8 @@
 /data 
 /saved_models
 /vyzkumny_ukol/data
+/runs
+/old_runs
 *.ckpt
 # Byte-compiled / optimized / DLL files
 __pycache__/
