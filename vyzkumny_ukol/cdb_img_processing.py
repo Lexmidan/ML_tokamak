@@ -40,27 +40,19 @@ def demosaic(data: xr.DataArray) -> np.array:
         Data in RGB format.
     """
 
-    r= data[:,::2,1::2]
-    b= data[:,1::2,::2]
-    g1=data[:,1::2,1::2]
-    g2=data[:,::2,::2]
-    g=xr.DataArray((g1.data+g2.data)/2) #don't wanna lose any information. Green will be normalized anyway
+    r = data[:,::2,1::2]
+    b = data[:,1::2,::2]
+    g1 = data[:,1::2,1::2]
+    g2 = data[:,::2,::2]
+    g=xr.DataArray((g1.data+g2.data)/2) #don't wanna lose any information.
 
     xar=xr.DataArray([r,g,b], dims=('color', 'time', 'x', 'y'), coords={'color': ['r','g','b'], 'time': data.coords['time'],\
                                                                          'x': np.arange(r.shape[1]), 'y':np.arange(r.shape[2])})
     axr=xar.transpose('time', 'x', 'y', 'color')
 
     # kazdy pixel ma 12 bitu (hodnoty 0..4096) => normalizujeme na rozsah 0..1
-    axr=axr/(2**12-1)  #Nejde tu pouzit axr/=... "Cannot cast ufunc 'divide' output from dtype('float64') to dtype('uint16') with casting rule 'same_kind'"
-
-    #Normalizace - stara
-    #np_axr = axr.data.astype('float64') 
-    #channel_min = np.min(np_axr, axis=(0, 1, 2))  # minimum value for each time and channel
-    #channel_span = np.max(np_axr, axis=(0, 1, 2)) - channel_min  # span of values for each time and channel
-    #channel_norm = np.where(channel_span > 0, channel_span, 1)  # use 1 when span is 0
-    #axr = (axr - channel_min[None, None, :]) / channel_norm[None, None, :]
-    #np_axr=axr.data
-
+    axr=axr/(2**12-1)  
+    #Nejde tu pouzit axr/=... "Cannot cast ufunc 'divide' output from dtype('float64') to dtype('uint16') with casting rule 'same_kind'"
 
     return axr
 
@@ -82,7 +74,7 @@ def flip_image(data: xr.DataArray, flip_horizontal: bool = True, flip_vertical: 
         data=data[:,::-1,:]
     return data
 
-def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float) -> Path:
+def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float, just_names: bool = False) -> Path:
     """Save single frame to image file.
 
     Output file name is f"{path}/RIS{ris}_{shot}_t={time}.png"
@@ -93,6 +85,7 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float
         ris: Number of RIS camera, will be saved as a part of image file name.
         shot: Shot, will be saved as a part of image file name.
         time: Time in [ms]. Will be saved as a part of image file name
+        just_names: Bool, function will only return filenames if True. Saves time if images are already saved
 
     Returns:
         Path to created file name.
@@ -101,8 +94,9 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float
         ??
     """
     filename=f"{path}/RIS{ris}_{shot}_t={time}.png"
-    img = Image.fromarray((frame.data*255).astype('uint8')).convert('RGB')
-    img.save(filename, format=None)
+    if not(just_names):
+        img = Image.fromarray((frame.data*255).astype('uint8')).convert('RGB')
+        img.save(filename, format=None)
     
     return filename
 
@@ -125,7 +119,7 @@ def discharge_duration(shot: int, threshold: float = 1e4) -> Tuple[float, float]
 
     return  start, end
 
-def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_discharge_duration=False):
+def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_discharge_duration: bool=True, just_names: bool = False):
     """Save all images from RIS camera in a given shot to a given folder.
 
     Saves only frames from times when there was a plasma.
@@ -135,19 +129,21 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_dischar
         path: Output path. The image files will be saved to subfolder path / {shot}. The subfolder
             will be created if it does not exist.
         ris: Which camera to use? 1 or 2.
+        use_discharge_duration: save only images with plasma on it
+        just_names: function will only return filenames if True. Saves time.
     Returns:
         filenames: np.array with all the names of saved images
     """
     filenames = [] #str array with all the names of saved images
-
+    print('Demosaicing images')
     if use_discharge_duration:
         start, end = discharge_duration(shot, 1e4)
-        dem_data=flip_image(demosaic(data).sel(time=slice(start,end)))
+        dem_data = flip_image(demosaic(data).sel(time=slice(start,end)))
 
     else:
         dem_data=flip_image(demosaic(data))
-    for frame in tqdm(dem_data, total=len(dem_data)):    # automaticky se zobrazi a bude v prubehu cyklu updatovat progressbar
-        filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data)
+    for frame in tqdm(dem_data, total=len(dem_data), desc='Saving images'):    # automaticky se zobrazi a bude v prubehu cyklu updatovat progressbar
+        filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data, just_names=just_names)
         filenames.append(filename)
 
     return filenames
