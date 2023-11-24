@@ -44,16 +44,15 @@ def demosaic(data: xr.DataArray) -> np.array:
     b = data[:,1::2,::2]
     g1 = data[:,1::2,1::2]
     g2 = data[:,::2,::2]
-    g=xr.DataArray((g1.data+g2.data)/2) #don't wanna lose any information.
+    g = xr.DataArray((g1.data+g2.data)/2)
 
-    xar=xr.DataArray([r,g,b], dims=('color', 'time', 'x', 'y'), coords={'color': ['r','g','b'], 'time': data.coords['time'],\
+    xar = xr.DataArray([r,g,b], dims=('color', 'time', 'x', 'y'), coords={'color': ['r','g','b'], 'time': data.coords['time'],\
                                                                          'x': np.arange(r.shape[1]), 'y':np.arange(r.shape[2])})
-    axr=xar.transpose('time', 'x', 'y', 'color')
+    axr = xar.transpose('time', 'x', 'y', 'color')
 
-    # kazdy pixel ma 12 bitu (hodnoty 0..4096) => normalizujeme na rozsah 0..1
-    axr=axr/(2**12-1)  
-    #Nejde tu pouzit axr/=... "Cannot cast ufunc 'divide' output from dtype('float64') to dtype('uint16') with casting rule 'same_kind'"
-
+    # kazdy pixel ma 12 bitu (hodnoty 0..4095) => normalizujeme na rozsah 0..1
+    axr = axr/(2**12-1)
+    
     return axr
 
 def flip_image(data: xr.DataArray, flip_horizontal: bool = True, flip_vertical: bool = True) -> np.array:
@@ -69,9 +68,9 @@ def flip_image(data: xr.DataArray, flip_horizontal: bool = True, flip_vertical: 
     """
 
     if flip_horizontal:
-        data=data[:,:,::-1]
+        data = data[:,:,::-1]
     if flip_vertical:
-        data=data[:,::-1,:]
+        data = data[:,::-1,:]
     return data
 
 def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float, just_names: bool = False) -> Path:
@@ -93,7 +92,7 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int, shot: int, time: float
     Raises:
         ??
     """
-    filename=f"{path}/RIS{ris}_{shot}_t={time}.png"
+    filename = f"{path}/RIS{ris}_{shot}_t={time:.1f}.png"
     if not(just_names):
         img = Image.fromarray((frame.data*255).astype('uint8')).convert('RGB')
         img.save(filename, format=None)
@@ -141,7 +140,7 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_dischar
         dem_data = flip_image(demosaic(data).sel(time=slice(start,end)))
 
     else:
-        dem_data=flip_image(demosaic(data))
+        dem_data = flip_image(demosaic(data))
     for frame in tqdm(dem_data, total=len(dem_data), desc='Saving images'):    # automaticky se zobrazi a bude v prubehu cyklu updatovat progressbar
         filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data, just_names=just_names)
         filenames.append(filename)
