@@ -1,9 +1,9 @@
-#import all packages and set seed
 import os
 from pathlib import Path
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import matplotlib_inline.backend_inline
 import seaborn as sns
 import torch
 import pandas as pd
@@ -13,23 +13,21 @@ import pytorch_lightning as pl
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, random_split, WeightedRandomSampler
 from torchvision.transforms import Normalize
+from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall
 import torchsummary
 from torch.optim import lr_scheduler
 from pytorch_lightning.callbacks import Callback
 import torch.nn as nn
 from tempfile import TemporaryDirectory
 from datetime import datetime
+from torch.utils.tensorboard import SummaryWriter
 import time 
-from torchmetrics.classification import MulticlassConfusionMatrix
 
 sns.reset_orig()
 sns.set()
 
-batch_size = 32
 
 
-# PyTorch TensorBoard support
-from torch.utils.tensorboard import SummaryWriter
 # Setting the seed
 pl.seed_everything(42)
 # Ensure that all operations are deterministic on GPU (if used) for reproducibility
@@ -39,44 +37,50 @@ torch.backends.cudnn.benchmark = False
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 print("Device:", device)
 
-path = Path(os.getcwd())
 
 
 ####################### Create datasets and dataloaders #######################
 
-shots = [16534, 16769, 16773, 18130, 19237, 19240, 19379, 18057, 16989]
-shots_for_testing = [16769, 18130, 18057]
-shots_for_validation = [19237]
-
-shot_df = pd.DataFrame([])
-
-for shot in shots:
-    df = pd.read_csv(f'{path}/LHmode-detection-shot{shot}.csv')
-    df['shot'] = shot
-    shot_df = pd.concat([shot_df, df], axis=0)
-
-
-df_mode = shot_df['mode'].copy()
-df_mode[shot_df['mode']=='L-mode'] = 0
-df_mode[shot_df['mode']=='H-mode'] = 1
-df_mode[shot_df['mode']=='ELM'] = 0 
-shot_df['mode'] = df_mode
-shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
-
-# Images from RIS2 camera
-# ris2_names = shot_df['filename'].str.replace('RIS1', 'RIS2')
-# shot_df_RIS2 = shot_df.copy()
-# shot_df_RIS2['filename'] = ris2_names
-
-# Combine both datasets
-#shot_df = pd.concat([shot_df, shot_df_RIS2], axis=0)
-#shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
-
-# Precalculated mean and std for each color from
-# https://github.com/pytorch/examples/blob/97304e232807082c2e7b54c597615dc0ad8f6173/imagenet/main.py#L197-L198
 mean = np.array([0.485, 0.456, 0.406])
 std = np.array([0.229, 0.224, 0.225])
 
+
+def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list, use_ris2:bool = False):
+    '''
+    Takes path and lists of shots. Shots not specified in shots_for_testing
+    and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
+    'mode' columns is then transformed to [0,1,2] notation, where 0 stands for L-mode, 1 for H-mode and 2 for ELM
+    '''
+
+    shot_df = pd.DataFrame([])
+
+    for shot in shots:
+        df = pd.read_csv(f'{path}/data/LHmode-detection-shots/LHmode-detection-shot{shot}.csv')
+        df['shot'] = shot
+        shot_df = pd.concat([shot_df, df], axis=0)
+
+
+    df_mode = shot_df['mode'].copy()
+    df_mode[shot_df['mode']=='L-mode'] = 0
+    df_mode[shot_df['mode']=='H-mode'] = 1
+    df_mode[shot_df['mode']=='ELM'] = 0 
+    shot_df['mode'] = df_mode
+    shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
+
+    if use_ris2:
+        ris2_names = shot_df['filename'].str.replace('RIS1', 'RIS2')
+        shot_df_RIS2 = shot_df.copy()
+        shot_df_RIS2['filename'] = ris2_names
+
+        #Combine both datasets
+        shot_df = pd.concat([shot_df, shot_df_RIS2], axis=0)
+        shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
+
+    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
+    val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
+    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
+
+    return shot_df, test_df, val_df, train_df
 
 class ImageDataset(Dataset):
     def __init__(self, annotations, img_dir, mean, std):
@@ -93,19 +97,23 @@ class ImageDataset(Dataset):
         image = read_image(img_path).float()
         normalized_image = (image - self.mean[:, None, None])/(255 * self.std[:, None, None])
         label = self.img_labels.iloc[idx]['mode']
-        return normalized_image, label, img_path
-        
+        time = self.img_labels.iloc[idx]['time']
+        return normalized_image, label, img_path, time
 
-#First split the dataset
-test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
-val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
-train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
 
 #Then calculate weights
-def get_dset(df, path, batch_size):
+def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32):
+    """
+    Gets dataframe, path and batch size, returns "equiprobable" dataloader
+
+    Args:
+        df: should contain columns with time, confinement mode in [0,1,2] notation and filename of the images
+        path: path where images are located
+        batch_size: batch size
+    Returns: 
+        dataloader: dloader, which returns each class with the same probability
     """
 
-    """
     mode_weight = (1/df['mode'].value_counts()).values
     sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
     sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
@@ -113,12 +121,6 @@ def get_dset(df, path, batch_size):
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
     return dataloader
 
-train_dataloader = get_dset(train_df, path=path, batch_size=batch_size)
-test_dataloader = get_dset(test_df, path=path, batch_size=batch_size)
-val_dataloader = get_dset(val_df, path=path, batch_size=batch_size)
-
-dataloaders = {'train':train_dataloader, 'val':val_dataloader} #TODO: add test loader in train function and consequenlty to this dict
-dataset_sizes = {x: len(dataloaders[x].dataset) for x in ['train', 'val']}
 
 def imshow(inp, title=None):
     """Display image for Tensor."""
@@ -131,59 +133,23 @@ def imshow(inp, title=None):
         plt.title(title)
 
 
-modes = ['L-mode', 'H-mode', 'ELM']
 
-################# Timestamp ###################################################
-timestamp = input('add comment: ') + datetime.fromtimestamp(time.time()).strftime("-%d-%m-%Y, %H-%M-%S")#9 times!
-
-# create grid of images
-# default `log_dir` is "runs" - we'll be more specific here
-writer = SummaryWriter(f'runs/{timestamp}')
-
-#################### Import pretrained model ##################################
-pretrained_model = torchvision.models.resnet18(weights='IMAGENET1K_V1', )
-num_ftrs = pretrained_model.fc.in_features
-# Here the size of each output sample is set to 3.
-# Alternatively, it can be generalized to ``nn.Linear(num_ftrs, len(modes))``.
-pretrained_model.fc = torch.nn.Linear(num_ftrs, 3) #3 classes: L-mode, H-mode, ELM
-
-
-############# Freeze All layers except the last f.c. layer ####################
-
-for param in pretrained_model.parameters():
-    param.requires_grad = False
- 
-# Parameters of newly constructed modules have requires_grad=True by default
-num_ftrs = pretrained_model.fc.in_features
-pretrained_model.fc = nn.Linear(num_ftrs, 3) #3 classes: L-mode, H-mode, ELM
-
-#################### Define criterion and optimizer ###########################
-
-pretrained_model = pretrained_model.to(device)
-
-criterion = nn.CrossEntropyLoss()
-
-# Observe that all parameters are being optimized
-optimizer = torch.optim.Adam(pretrained_model.parameters(), lr=0.001) #pouzit adam
-
-# Decay LR by a factor of 0.1 every 7 epochs
-exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
-
-################### 
+################### Helping functions to track the model training #############
 
 def images_to_probs(net, images):
     '''
     Generates predictions and corresponding probabilities from a trained
     network and a list of images
     '''
-    output = net(images)
+    with torch.no_grad():
+        output = net(images)
     # convert output probabilities to predicted class
-    _, preds_tensor = torch.max(output, 1) 
-    preds = np.squeeze(preds_tensor.cpu().numpy())
-    return preds, [torch.nn.functional.softmax(el, dim=0)[i].item() for i, el in zip(preds, output)]
+    max_logit, class_prediction = torch.max(output, 1) 
+    preds = np.squeeze(class_prediction.cpu().numpy())
+    return output, preds, [torch.nn.functional.softmax(el, dim=0)[i].item() for i, el in zip(preds, output)]
 
 
-def plot_classes_preds(net, images, img_paths, labels, identificator):
+def plot_classes_preds(net, images, img_paths, labels, identificator, path):
     '''
     Generates matplotlib Figure using a trained network, along with images
     and labels from a batch, that shows the network's top prediction along   
@@ -191,8 +157,9 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
     information based on whether the prediction was correct or not.
     Uses the "images_to_probs" function.
     '''
+    modes = ['L-mode', 'H-mode', 'ELM']
     timestamp = datetime.fromtimestamp(time.time()).strftime("%d-%m-%Y, %H-%M-%S")
-    preds, probs = images_to_probs(net, images)
+    _, preds, probs = images_to_probs(net, images)
     # plot the images in the batch, along with predicted and true labels
     fig = plt.figure(figsize=(16,9))
     for idx in np.arange(4):
@@ -205,12 +172,26 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
             probs[idx] * 100.0,
             modes[labels[idx]]),
                     color=("green" if preds[idx]==labels[idx].item() else "red"))
-    plt.savefig(f'{path}/preds_vs_actuals/preds_vs_actuals_{timestamp}_{identificator}.jpg')
+    #plt.savefig(f'{path}/preds_vs_actuals/preds_vs_actuals_{timestamp}_{identificator}.jpg')
     return fig
 
 ##################### Define model training function ##########################
 
-def train_model(model, criterion, optimizer, scheduler, num_epochs=25, comment = ''):
+def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict, writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25, comment = ''):
+    '''
+    Trains the model
+
+    Args:
+        model: 
+        criterion: 
+        optimizer: 
+        scheduler: 
+        num_epochs: 
+        comment: 
+        dataloaders: dictionary containing train and validation dataloaders
+        dataset_sizes: dictionary containing lengths of train and validation datasets
+        writer: tensorboard writer
+    '''
     since = time.time()
 
     # Create a temporary directory to save training checkpoints
@@ -237,7 +218,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, comment =
                 running_batch = 0
                 # Iterate over data.
                 #TODO: eliminate the need in that dummy iterative for tensorboard part
-                for inputs, labels, img_paths in tqdm(dataloaders[phase]):
+                for inputs, labels, img_paths, times in tqdm(dataloaders[phase]):
                     inputs = inputs.to(device).float() # #TODO: is it smart to convert double to float here? 
                     labels = labels.to(device)
                     
@@ -251,7 +232,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, comment =
                     with torch.set_grad_enabled(phase == 'train'):
                         outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
                         #TODO: inputs.type. 
-                        _, preds = torch.max(outputs, 1)
+                        _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
                         loss = criterion(outputs, labels)
 
                         # backward + optimize only if in training phase
@@ -270,9 +251,24 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, comment =
                     if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
                         # ...log the running loss
                         
+                        #Training/validation loss
                         writer.add_scalar(f'{phase}ing loss {comment}',
                                         running_loss / num_of_samples,
                                         epoch * len(dataloaders[phase]) + running_batch)
+                        
+                        #F1 metric
+                        writer.add_scalar(f'{phase}ing F1 metric {comment}',
+                                        F1Score(task="multiclass", num_classes=3).to(device)(preds, labels),
+                                        epoch * len(dataloaders[phase]) + running_batch)
+                        
+                        #Precision recall
+                        writer.add_scalar(f'{phase}ing macro Precision {comment}', 
+                                          MulticlassPrecision(num_classes=3).to(device)(preds, labels),
+                                          epoch * len(dataloaders[phase]) + running_batch)
+                        
+                        writer.add_scalar(f'{phase}ing macro Recall {comment}', 
+                                          MulticlassRecall(num_classes=3).to(device)(preds, labels),
+                                          epoch * len(dataloaders[phase]) + running_batch)
                         
                         
                     
@@ -311,75 +307,61 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, comment =
     return model
 
 
-model = train_model(pretrained_model, criterion, optimizer,
-                                 exp_lr_scheduler, num_epochs=2, comment='Last f.c.')
-
-model_path = Path(f'{path}/runs/model_last f.c._{timestamp}.pt')
-torch.save(model.state_dict(), model_path)
-
 ####################### Test model with trained f.c. layer ####################
 
-def test_model(model, test_dataloader):
+def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader, max_batch: int = 0, return_metrics: bool = True):
+    '''
+    Takes model and dataloader and returns figure with confusion matrix, 
+    dataframe with predictions, F1 metric value, precision, recall and accuracy
+
+    Args:
+        model: ResNet model
+        test_dataloader: DataLoader used for testing
+        max_batch: maximum number of bathces to use for testing. Set = 0 to use all batches in DataLoader
+        return_metrics: if True returns confusion matrix, F1, precision, recall and accuracy 
+    
+    Returns: 
+        preds: pd.DataFrame() pd.DataFrame with columns of predicted class, true class, frame time and confidence of the prediction
+        precision: MulticlassPrecision(num_classes=3)
+        recall: MulticlassRecall(num_classes=3)
+        accuracy: (TP+TN)/(TP+TN+FN+FP)
+        fig_confusion_matrix: MulticlassConfusionMatrix(num_classes=3)
+    '''
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
-    wrong_preds = pd.DataFrame(columns=['path', 'Prediction', 'label'])
+    preds = pd.DataFrame(columns=['prediction', 'label', 'time', 'confidence'])
 
-    for batch_index, (img, y, paths) in enumerate(test_dataloader):
-        y_hat, _ = images_to_probs(model,img.float().to(device))
+    for batch_index, (img, y, paths, times) in enumerate(test_dataloader):
+        _, y_hat, confidence = images_to_probs(model,img.float().to(device))
         y_hat = torch.tensor(y_hat)
         y_df = torch.cat((y_df, y), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
 
-        wrong_pred = pd.DataFrame([[paths[x], y_hat[x].item(), y[x].item()] for x in torch.where(y!=y_hat)[0]],
-                                  columns=wrong_preds.columns)
+        pred = pd.DataFrame({'prediction': y_hat.data, 'label': y.data, 'time':times, 'confidence':confidence})
 
-        wrong_preds = pd.concat([wrong_preds, wrong_pred],axis=0, ignore_index=True)
+        preds = pd.concat([preds, pred],axis=0, ignore_index=True)
 
-        if batch_index>50:
+        if max_batch!=0 and batch_index>max_batch:
             break
 
-    metric = MulticlassConfusionMatrix(num_classes=3)
-    metric.update(y_hat_df, y_df)
-    fig_, ax_ = metric.plot()
-    return fig_
+    if return_metrics:
+        #Confusion matrix
+        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
+        confusion_matrix_metric.update(y_hat_df, y_df)
+        fig_confusion_matrix, ax_ = confusion_matrix_metric.plot()
 
-confusion_matrix = test_model(model, test_dataloader)
+        #F1
+        f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
 
-writer.add_figure(f'Confusion matrix for the model with trained f.c. layer', confusion_matrix)
+        #Precision
+        precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
+        recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
+        #precision(logits_df, y_df.int())
 
-
-for param in model.parameters():
-    param.requires_grad = True
-
-model = train_model(pretrained_model, criterion, optimizer,
-                         exp_lr_scheduler, num_epochs=2, comment='All layers')
-
-model_path = Path(f'{path}/runs/model_{timestamp}_with_all_weights_trained.pt')
-torch.save(model.state_dict(), model_path)
-
-
-###################### Test the model with all weights trained ################
-
-y_df = torch.tensor([])
-y_hat_df = torch.tensor([])
-wrong_preds = pd.DataFrame(columns=['path', 'Prediction', 'label'])
-
-for batch_index, (img, y, paths) in enumerate(test_dataloader):
-    y_hat, _ = images_to_probs(model,img.float().to(device))
-    y_hat = torch.tensor(y_hat)
-    y_df = torch.cat((y_df, y), dim=0)
-    y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
-    
-    wrong_pred = pd.DataFrame([[paths[x], y_hat[x].item(), y[x].item()] for x in torch.where(y!=y_hat)[0]],
-                              columns=wrong_preds.columns)
-    
-    wrong_preds = pd.concat([wrong_preds, wrong_pred],axis=0, ignore_index=True)
-    
-    if batch_index>50:
-        break
-
-metric = MulticlassConfusionMatrix(num_classes=3)
-metric.update(y_hat_df, y_df)
-fig_, ax_ = metric.plot()
+        #Accuracy
+        accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
+    else: 
+        fig_confusion_matrix, f1, precision, recall, accuracy = None, None, None, None, None
+    return preds, fig_confusion_matrix, f1, precision, recall, accuracy
 
 
