@@ -1,7 +1,11 @@
-#dummy upd
+############Those are mine
+/vyzkumny_ukol/ConfusionMatrix 3 epochs of training 26_11_2023.svg
+/vyzkumny_ukol/preds_vs_actuals
 /data 
 /saved_models
 /vyzkumny_ukol/data
+/runs
+/old_runs
 *.ckpt
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -13,6 +17,9 @@ PyTorch/Data
 # C extensions
 *.so
 *.png
+vyzkumny_ukol/runs
+###########
+
 # Distribution / packaging
 .Python
 build/
