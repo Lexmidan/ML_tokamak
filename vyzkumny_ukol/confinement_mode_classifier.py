@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import re
 import matplotlib_inline.backend_inline
 import seaborn as sns
 import torch
@@ -102,7 +103,7 @@ class ImageDataset(Dataset):
 
 
 #Then calculate weights
-def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32):
+def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = True):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -114,11 +115,16 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32):
         dataloader: dloader, which returns each class with the same probability
     """
 
-    mode_weight = (1/df['mode'].value_counts()).values
-    sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
-    sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
     dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, std=std)
-    dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+
+    if balance_data:
+        mode_weight = (1/df['mode'].value_counts()).values
+        sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
+        sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+    else: 
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
     return dataloader
 
 
@@ -329,15 +335,23 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
     '''
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
-    preds = pd.DataFrame(columns=['prediction', 'label', 'time', 'confidence'])
-
+    preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
+    pattern = re.compile(r'RIS1_(\d+)_t=')
+    
     for batch_index, (img, y, paths, times) in enumerate(test_dataloader):
-        _, y_hat, confidence = images_to_probs(model,img.float().to(device))
+        for path in paths:
+            try:
+                Image.open(path).tobytes()
+            except IOError:
+                print('detect error img %s' % path)
+                continue
+        outputs, y_hat, confidence = images_to_probs(model,img.float().to(device))
         y_hat = torch.tensor(y_hat)
         y_df = torch.cat((y_df, y), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
-
-        pred = pd.DataFrame({'prediction': y_hat.data, 'label': y.data, 'time':times, 'confidence':confidence})
+        shot_numbers = [int(pattern.search(path).group(1)) for path in paths]
+        pred = pd.DataFrame({'shot':shot_numbers, 'prediction': y_hat.data, 'label': y.data, 'time':times, 'confidence':confidence,
+                            'L_logit': outputs[:,0].cpu(), 'H_logit': outputs[:,1].cpu(), 'ELM_logit': outputs[:,2].cpu()})
 
         preds = pd.concat([preds, pred],axis=0, ignore_index=True)
 
@@ -348,7 +362,7 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
-        fig_confusion_matrix, ax_ = confusion_matrix_metric.plot()
+        confusion_matrix = confusion_matrix_metric.plot()
 
         #F1
         f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
@@ -361,7 +375,7 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
         #Accuracy
         accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
     else: 
-        fig_confusion_matrix, f1, precision, recall, accuracy = None, None, None, None, None
-    return preds, fig_confusion_matrix, f1, precision, recall, accuracy
+        confusion_matrix, f1, precision, recall, accuracy = None, None, None, None, None
+    return preds, confusion_matrix, f1, precision, recall, accuracy
 
 
