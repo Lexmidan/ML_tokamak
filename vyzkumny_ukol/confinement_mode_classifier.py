@@ -14,7 +14,7 @@ import pytorch_lightning as pl
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, random_split, WeightedRandomSampler
 from torchvision.transforms import Normalize
-from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall
+from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
 import torchsummary
 from torch.optim import lr_scheduler
 from pytorch_lightning.callbacks import Callback
@@ -338,19 +338,13 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
     preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
     pattern = re.compile(r'RIS1_(\d+)_t=')
     
-    for batch_index, (img, y, paths, times) in enumerate(test_dataloader):
-        for path in paths:
-            try:
-                Image.open(path).tobytes()
-            except IOError:
-                print('detect error img %s' % path)
-                continue
+    for batch_index, (img, y, paths, times) in tqdm(enumerate(test_dataloader)):
         outputs, y_hat, confidence = images_to_probs(model,img.float().to(device))
         y_hat = torch.tensor(y_hat)
-        y_df = torch.cat((y_df, y), dim=0)
+        y_df = torch.cat((y_df.int(), y), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
         shot_numbers = [int(pattern.search(path).group(1)) for path in paths]
-        pred = pd.DataFrame({'shot':shot_numbers, 'prediction': y_hat.data, 'label': y.data, 'time':times, 'confidence':confidence,
+        pred = pd.DataFrame({'shot': shot_numbers, 'prediction': y_hat.data, 'label': y.data, 'time':times, 'confidence': confidence,
                             'L_logit': outputs[:,0].cpu(), 'H_logit': outputs[:,1].cpu(), 'ELM_logit': outputs[:,2].cpu()})
 
         preds = pd.concat([preds, pred],axis=0, ignore_index=True)
@@ -359,6 +353,7 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
             break
 
     if return_metrics:
+        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
@@ -371,11 +366,123 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
         precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
         recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
         #precision(logits_df, y_df.int())
-
+         #Precision_recall curve
+        pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
+        pr_curve.update(softmax_out, y_df)
+        pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
+        #ROC metric
+        mcroc = MulticlassROC(num_classes=3, thresholds=64)
+        mcroc.update(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), y_df)
+        roc_fig, roc_ax = mcroc.plot(score=True)
         #Accuracy
         accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
     else: 
         confusion_matrix, f1, precision, recall, accuracy = None, None, None, None, None
-    return preds, confusion_matrix, f1, precision, recall, accuracy
+    return preds, confusion_matrix, f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
 
+
+def per_shot_test(path, shots: list, results_df: pd.DataFrame):
+    '''
+    Takes model, its result dataframe from confinement_mode_classifier.test_model() and shot numbers.
+    Returns metrics of model for different shots separately
+
+    Args: 
+        shots: list with numbers of shot to be tested on.
+        model: ResNet model
+        results_df: pd.DataFrame from confinement_mode_classifier.test_model().
+        time_confidence_img: Image with model confidence on separate shot
+        roc_img: Image with ROC 
+        conf_matrix_img: Image with confusion matrix
+        combined_image: Combined image with three previous returns
+    Returns:
+        path: Path where images are saved
+    '''
+
+    for shot in tqdm(shots):
+        pred_for_shot = results_df[results_df['shot']==shot]
+        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
+
+        preds_tensor = torch.tensor(pred_for_shot['prediction'].values.astype(float))
+        labels_tensor = torch.tensor(pred_for_shot['label'].values.astype(int))
+        
+        #Confusion matrix
+        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
+        confusion_matrix_metric.update(preds_tensor, labels_tensor)
+        conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
+        
+        #Precision_recall curve
+        pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
+        pr_curve.update(softmax_out, labels_tensor)
+        pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
+
+        #ROC metric
+        mcroc = MulticlassROC(num_classes=3, thresholds=64)
+        mcroc.update(torch.tensor(pred_for_shot[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), labels_tensor)
+        roc_fig, roc_ax = mcroc.plot(score=True)
+
+        #f1 score
+        f1 = F1Score(task="multiclass", num_classes=3)(preds_tensor, labels_tensor)
+
+        #Precision
+        precision = MulticlassPrecision(num_classes=3)(preds_tensor, labels_tensor)
+
+        #recall
+        recall = MulticlassRecall(num_classes=3)(preds_tensor, labels_tensor)
+
+        #accuracy
+        accuracy = len(pred_for_shot[pred_for_shot['prediction']==pred_for_shot['label']])/len(pred_for_shot)
+
+        textstr = '\n'.join((
+            f'shot {shot}',
+            r'threshhold = 0.5:',
+            r'f1=%.2f' % (f1.item(), ),
+            r'precision=%.2f' % (precision.item(), ),
+            r'recall=%.2f' % (recall.item(), ),
+            r'accuracy=%.2f' % (accuracy, )))
+
+
+        fig, ax = plt.subplots(figsize=(10,6))
+
+        ax.plot(pred_for_shot['time'],softmax_out[:,1], label='model confidence')
+        ax.plot(pred_for_shot['time'],pred_for_shot['label'], lw=3, alpha=.5, label='label')
+        ax.set_xlabel('t [ms]')
+        ax.set_ylabel('H-mod confidence')
+        plt.title(f'shot {shot}')
+        ax.legend()
+
+        # these are matplotlib.patch.Patch properties
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+
+        # place a text box in upper left in axes coords
+        roc_ax.text(0.05, 0.3, textstr, transform=ax.transAxes, fontsize=14,
+                verticalalignment='bottom', bbox=props)
+        conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
+        pr_curve_ax.set_title(f'pr_curve for shot {shot}')
+        
+        conf_matrix_fig.set_figheight(fig.get_size_inches()[1])
+        # Save the figures to temporary files
+        fig.savefig(f'{path}/data/time_confidence_for_shot_{shot}.png')
+        roc_fig.savefig(f'{path}/data/roc_for_shot_{shot}.png')
+        conf_matrix_fig.savefig(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
+        pr_curve_fig.savefig(f'{path}/data/pr_curve_for_shot_{shot}.png')
+
+        # Open the saved images using Pillow
+        time_confidence_img = Image.open(f'{path}/data/time_confidence_for_shot_{shot}.png')
+        roc_img = Image.open(f'{path}/data/roc_for_shot_{shot}.png')
+        conf_matrix_img = Image.open(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
+        pr_curve_img = Image.open(f'{path}/data/pr_curve_for_shot_{shot}.png')
+
+        combined_image = Image.new('RGB', (time_confidence_img.width + conf_matrix_img.width,\
+                                            time_confidence_img.height + roc_img.height))
+
+        # Paste the saved images into the combined image
+        combined_image.paste(time_confidence_img, (0, 0))
+        combined_image.paste(conf_matrix_img, (time_confidence_img.width, 0))
+        combined_image.paste(roc_img, (0, time_confidence_img.height))
+        combined_image.paste(pr_curve_img, (roc_img.width, time_confidence_img.height))
+        
+        # Save the combined image
+        combined_image.save(f'{path}/data/combined_image_for_shot_{shot}.png')
+
+    return f'{path}/data'
 
