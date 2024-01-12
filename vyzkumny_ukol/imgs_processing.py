@@ -141,12 +141,12 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int, use_dischar
     print('Demosaicing images')
     if use_discharge_duration:
         start, end = discharge_duration(shot, 1e4)
-        dem_data = flip_image(demosaic(data).sel(time=slice(start,end)))
+        dem_data = flip_image(demosaic(data).sel(time=slice(start, end)))
 
     else:
         dem_data = flip_image(demosaic(data))
     for frame in tqdm(dem_data, total=len(dem_data), desc='Saving images'):    # automaticky se zobrazi a bude v prubehu cyklu updatovat progressbar
-        filename = save_frame(path=path,frame=frame,ris=ris, shot=shot, time=frame.time.data, just_names=just_names)
+        filename = save_frame(path=path, frame=frame, ris=ris, shot=shot, time=frame.time.data, just_names=just_names)
         filenames.append(filename)
 
     return filenames

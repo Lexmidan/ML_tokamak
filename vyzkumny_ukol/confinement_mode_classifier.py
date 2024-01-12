@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import re
 import matplotlib_inline.backend_inline
 import seaborn as sns
@@ -46,7 +47,7 @@ mean = np.array([0.485, 0.456, 0.406])
 std = np.array([0.229, 0.224, 0.225])
 
 
-def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list, use_ris2:bool = False):
+def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list, use_ris2:bool = False, use_ELMS: bool = True):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
@@ -64,7 +65,8 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, sho
     df_mode = shot_df['mode'].copy()
     df_mode[shot_df['mode']=='L-mode'] = 0
     df_mode[shot_df['mode']=='H-mode'] = 1
-    df_mode[shot_df['mode']=='ELM'] = 0 
+    df_mode[shot_df['mode']=='ELM'] = int(use_ELMS) + 1  
+
     shot_df['mode'] = df_mode
     shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
@@ -84,26 +86,31 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, sho
     return shot_df, test_df, val_df, train_df
 
 class ImageDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std):
+    def __init__(self, annotations, img_dir, mean, std, num_of_subsequent_imgs):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
+        self.num_of_subsequent_imgs = num_of_subsequent_imgs
 
     def __len__(self):
         return len(self.img_labels)
 
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
-        image = read_image(img_path).float()
-        normalized_image = (image - self.mean[:, None, None])/(255 * self.std[:, None, None])
-        label = self.img_labels.iloc[idx]['mode']
-        time = self.img_labels.iloc[idx]['time']
-        return normalized_image, label, img_path, time
+    def __getitem__(self, idx, num_of_subsequent_imgs):
+        labeled_imgs_dict = {}
+        for tick in range(num_of_subsequent_imgs):
+            img_path = os.path.join(self.img_dir, self.img_labels.loc[idx + tick, 'filename'])
+            image = read_image(img_path).float()
+            normalized_image = (image - self.mean[:, None, None])/(255 * self.std[:, None, None])
+            label = self.img_labels.iloc[idx]['mode']
+            time = self.img_labels.iloc[idx]['time']
+            key = f'image{tick}'  # Keys will be 'image1', 'image2', ..., 'imageN'
+            labeled_imgs_dict[key] = [normalized_image, label, img_path, time]
+        return labeled_imgs_dict
 
 
 #Then calculate weights
-def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = True):
+def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = False):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -114,6 +121,8 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
     Returns: 
         dataloader: dloader, which returns each class with the same probability
     """
+    if shuffle and balance_data:
+        raise Exception("Can't use data shuffling and balancing simultaniously")
 
     dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, std=std)
 
@@ -315,7 +324,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
 ####################### Test model with trained f.c. layer ####################
 
-def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader, max_batch: int = 0, return_metrics: bool = True):
+def test_model(path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader, max_batch: int = 0, return_metrics: bool = True):
     '''
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
@@ -337,8 +346,9 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
     y_hat_df = torch.tensor([])
     preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
     pattern = re.compile(r'RIS1_(\d+)_t=')
-    
-    for batch_index, (img, y, paths, times) in tqdm(enumerate(test_dataloader)):
+    batch_index = 0 #iterator
+    for img, y, paths, times in tqdm(test_dataloader, desc='Processing batches'):
+        batch_index +=1
         outputs, y_hat, confidence = images_to_probs(model,img.float().to(device))
         y_hat = torch.tensor(y_hat)
         y_df = torch.cat((y_df.int(), y), dim=0)
@@ -357,8 +367,7 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
-        confusion_matrix = confusion_matrix_metric.plot()
-
+        conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
         #F1
         f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
 
@@ -376,15 +385,50 @@ def test_model(model: torchvision.models.resnet.ResNet, test_dataloader: DataLoa
         roc_fig, roc_ax = mcroc.plot(score=True)
         #Accuracy
         accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
+
+        textstr = '\n'.join((
+            f'Whole test dset',
+            r'threshhold = 0.5:',
+            r'f1=%.2f' % (f1.item(), ),
+            r'precision=%.2f' % (precision.item(), ),
+            r'recall=%.2f' % (recall.item(), ),
+            r'accuracy=%.2f' % (accuracy, )))
+        # these are matplotlib.patch.Patch properties
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        
+        conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
+        pr_curve_ax.set_title(f'pr_curve for whole test dset')
+        roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+
+        # roc_fig.savefig(f'{path}/data/roc_for_test_dset.png')
+        # conf_matrix_fig.savefig(f'{path}/data/confusion_matrix_for_test_dset.png')
+        # pr_curve_fig.savefig(f'{path}/data/pr_curve_for_test_dset.png')
+
+        # Open the saved images using Pillow
+        roc_img = matplotlib_figure_to_pil_image(roc_fig)
+        conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
+        pr_curve_img = matplotlib_figure_to_pil_image(pr_curve_fig)
+        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_curve_img.width + roc_img.width,\
+                                            conf_matrix_img.height))
+
+        # Paste the saved images into the combined image
+        combined_image.paste(conf_matrix_img, (0, 0))
+        combined_image.paste(roc_img, (conf_matrix_img.width, 0))
+        combined_image.paste(pr_curve_img, (roc_img.width+conf_matrix_img.width, 0))
+        
+        # Save the combined image
+        combined_image.save(f'{path}/data/metrics_for_whole_test_dset.png')
+
+        return preds, (conf_matrix_fig, conf_matrix_ax), f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
     else: 
-        confusion_matrix, f1, precision, recall, accuracy = None, None, None, None, None
-    return preds, confusion_matrix, f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
+        return preds
+    
 
 
 def per_shot_test(path, shots: list, results_df: pd.DataFrame):
     '''
-    Takes model, its result dataframe from confinement_mode_classifier.test_model() and shot numbers.
-    Returns metrics of model for different shots separately
+    Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
+    Returns metrics of model for each shot separately
 
     Args: 
         shots: list with numbers of shot to be tested on.
@@ -441,36 +485,35 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
             r'accuracy=%.2f' % (accuracy, )))
 
 
-        fig, ax = plt.subplots(figsize=(10,6))
+        conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
 
-        ax.plot(pred_for_shot['time'],softmax_out[:,1], label='model confidence')
-        ax.plot(pred_for_shot['time'],pred_for_shot['label'], lw=3, alpha=.5, label='label')
-        ax.set_xlabel('t [ms]')
-        ax.set_ylabel('H-mod confidence')
+        conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='model confidence')
+        conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['label'], lw=3, alpha=.5, label='label')
+        conf_time_ax.set_xlabel('t [ms]')
+        conf_time_ax.set_ylabel('H-mod confidence')
         plt.title(f'shot {shot}')
-        ax.legend()
+        conf_time_ax.legend()
 
         # these are matplotlib.patch.Patch properties
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
 
         # place a text box in upper left in axes coords
-        roc_ax.text(0.05, 0.3, textstr, transform=ax.transAxes, fontsize=14,
-                verticalalignment='bottom', bbox=props)
+        roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
         pr_curve_ax.set_title(f'pr_curve for shot {shot}')
         
-        conf_matrix_fig.set_figheight(fig.get_size_inches()[1])
+        conf_matrix_fig.set_figheight(conf_time_fig.get_size_inches()[1])
         # Save the figures to temporary files
-        fig.savefig(f'{path}/data/time_confidence_for_shot_{shot}.png')
-        roc_fig.savefig(f'{path}/data/roc_for_shot_{shot}.png')
-        conf_matrix_fig.savefig(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
-        pr_curve_fig.savefig(f'{path}/data/pr_curve_for_shot_{shot}.png')
+        #conf_time_fig.savefig(f'{path}/data/time_confidence_for_shot_{shot}.png')
+        #roc_fig.savefig(f'{path}/data/roc_for_shot_{shot}.png')
+        #conf_matrix_fig.savefig(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
+        #pr_curve_fig.savefig(f'{path}/data/pr_curve_for_shot_{shot}.png')
 
         # Open the saved images using Pillow
-        time_confidence_img = Image.open(f'{path}/data/time_confidence_for_shot_{shot}.png')
-        roc_img = Image.open(f'{path}/data/roc_for_shot_{shot}.png')
-        conf_matrix_img = Image.open(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
-        pr_curve_img = Image.open(f'{path}/data/pr_curve_for_shot_{shot}.png')
+        time_confidence_img = matplotlib_figure_to_pil_image(conf_time_fig)
+        roc_img = matplotlib_figure_to_pil_image(roc_fig)
+        conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
+        pr_curve_img = matplotlib_figure_to_pil_image(pr_curve_fig)
 
         combined_image = Image.new('RGB', (time_confidence_img.width + conf_matrix_img.width,\
                                             time_confidence_img.height + roc_img.height))
@@ -482,7 +525,37 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         combined_image.paste(pr_curve_img, (roc_img.width, time_confidence_img.height))
         
         # Save the combined image
-        combined_image.save(f'{path}/data/combined_image_for_shot_{shot}.png')
+        combined_image.save(f'{path}/data/metrics_for_shot_{shot}.png')
 
     return f'{path}/data'
 
+def matplotlib_figure_to_pil_image(fig):
+    """
+    Convert a Matplotlib figure to a PIL Image.
+
+    Parameters:
+    - fig (matplotlib.figure.Figure): The Matplotlib figure to be converted.
+
+    Returns:
+    - PIL.Image.Image: The corresponding PIL Image.
+
+    Example:
+    >>> fig, ax = plt.subplots()
+    >>> ax.plot([1, 2, 3, 4], [10, 5, 20, 15])
+    >>> pil_image = matplotlib_figure_to_pil_image(fig)
+    >>> pil_image.save("output_image.png")
+    >>> pil_image.show()
+    """
+    # Create a FigureCanvasAgg to render the figure
+    canvas = FigureCanvasAgg(fig)
+
+    # Render the figure to a bitmap
+    canvas.draw()
+
+    # Get the RGB buffer from the bitmap
+    buf = canvas.buffer_rgba()
+
+    # Convert the buffer to a PIL Image
+    image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
+
+    return image
