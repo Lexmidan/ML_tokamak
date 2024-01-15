@@ -44,7 +44,7 @@ std = np.array([0.229, 0.224, 0.225])
 
 
 def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True):
+                            use_ELMS: bool = True, ris_option = 1):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
@@ -145,28 +145,29 @@ class TwoImagesModel(nn.Module):
     def __init__(self, modelA, modelB, hidden_units):
         super(TwoImagesModel, self).__init__()
 
-        num_of_out_features = modelA.fc.in_features
-        
-        self.no_fc_modelA = copy.deepcopy(modelA)
-        self.no_fc_modelA.fc = nn.Identity() #remove last fc layer
+        num_ftrs_A = modelA.fc.in_features
+        num_ftrs_B = modelB.fc.in_features
 
-        self.no_fc_modelB = copy.deepcopy(modelB)
-        self.no_fc_modelB.fc = nn.Identity() #remove last fc layer
+        self.modelA = copy.deepcopy(modelA)#nn.Sequential(*list(modelA.children())[:-1])   # Exclude the last layer
+        self.modelA.fc = nn.Linear(num_ftrs_A, 256)
 
+        self.modelB = copy.deepcopy(modelB)#nn.Sequential(*list(modelB.children())[:-1]) 
+        self.modelB.fc = nn.Linear(num_ftrs_B, 256)
 
         self.classifier = nn.Sequential(
-            nn.Linear(2 * num_of_out_features, hidden_units),
-            nn.ReLU(inplace=True),
+            nn.Linear(256 + 256, hidden_units),
+            nn.LeakyReLU(inplace=True),
             nn.Linear(hidden_units, 3) #3 for L, H, ELM
         )
 
     def forward(self, imgs):
-    
-        xA = self.no_fc_modelA(imgs[:, 0])
-        xB = self.no_fc_modelA(imgs[:, 1])
+        xA = self.modelA(imgs[:, 0])
+        xB = self.modelB(imgs[:, 1])
 
         x = torch.cat((xA, xB), dim=1)
+
         x = self.classifier(x)
+        
         
         return x   
 
@@ -284,7 +285,8 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
 ##################### Define model training function ##########################
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
-                 writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25, comment = ''):
+                 writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
+                 chkpt_path=os.getcwd()):
     '''
     Trains the model
 
@@ -301,124 +303,121 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     '''
     since = time.time()
 
-    # Create a temporary directory to save training checkpoints
-    with TemporaryDirectory() as tempdir:
-        best_model_params_path = os.path.join(tempdir, 'best_model_params.pt')
-    
-        torch.save(model.state_dict(), best_model_params_path)
-        best_acc = 0.0
 
-        for epoch in range(num_epochs):
-            print(f'Epoch {epoch+1}/{num_epochs}')
-            print('-' * 10)
-            
-            # Each epoch has a training and validation phase
-            for phase in ['train', 'val']:
-                if phase == 'train':
-                    model.train()  # Set model to training mode
-                else:
-                    model.eval()   # Set model to evaluate mode
+    torch.save(model.state_dict(), chkpt_path)
+    best_acc = 0.0
 
-                running_loss = 0.0
-                running_corrects = 0
-                num_of_samples = 0
-                running_batch = 0
-                # Iterate over data.
-                #TODO: eliminate the need in that dummy iterative for tensorboard part
-                for batch in tqdm(dataloaders[phase]):
-                    
-                    inputs = batch['img'].to(device).float() # #TODO: is it smart to convert double to float here? 
-                    labels = batch['label'].to(device)
-                    
-                    running_batch += 1
-                    
-                    # zero the parameter gradients
-                    optimizer.zero_grad()
+    for epoch in range(num_epochs):
+        print(f'Epoch {epoch+1}/{num_epochs}')
+        print('-' * 10)
+        
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluate mode
 
-                    # forward
-                    # track history if only in train
-                    with torch.set_grad_enabled(phase == 'train'):
-                        outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
-                        #TODO: inputs.type. 
-                        _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
-                        loss = criterion(outputs, labels)
+            running_loss = 0.0
+            running_corrects = 0
+            num_of_samples = 0
+            running_batch = 0
+            # Iterate over data.
+            #TODO: eliminate the need in that dummy iterative for tensorboard part
+            for batch in tqdm(dataloaders[phase]):
+                
+                inputs = batch['img'].to(device).float() # #TODO: is it smart to convert double to float here? 
+                labels = batch['label'].to(device)
+                
+                running_batch += 1
+                
+                # zero the parameter gradients
+                optimizer.zero_grad()
 
-                        # backward + optimize only if in training phase
-                        if phase == 'train':
-                            loss.backward()
-                            optimizer.step()
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
+                    #TODO: inputs.type. 
+                    _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
+                    loss = criterion(outputs, labels)
 
-                    # statistics
-                    running_loss += loss.item() * inputs.size(0)
-                    num_of_samples += inputs.size(0)
-                    running_corrects += torch.sum(preds == labels.data) #How many correct answers
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                num_of_samples += inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data) #How many correct answers
+                
+                
+                #tensorboard part
+                
+                if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
+                    # ...log the running loss
                     
+                    #Training/validation loss
+                    writer.add_scalar(f'{phase}ing loss',
+                                    running_loss / num_of_samples,
+                                    epoch * len(dataloaders[phase]) + running_batch)
                     
-                    #tensorboard part
+                    #F1 metric
+                    writer.add_scalar(f'{phase}ing F1 metric',
+                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, labels),
+                                    epoch * len(dataloaders[phase]) + running_batch)
                     
-                    if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
-                        # ...log the running loss
-                        
-                        #Training/validation loss
-                        writer.add_scalar(f'{phase}ing loss {comment}',
-                                        running_loss / num_of_samples,
+                    #Precision recall
+                    writer.add_scalar(f'{phase}ing macro Precision', 
+                                        MulticlassPrecision(num_classes=3).to(device)(preds, labels),
                                         epoch * len(dataloaders[phase]) + running_batch)
-                        
-                        #F1 metric
-                        writer.add_scalar(f'{phase}ing F1 metric {comment}',
-                                        F1Score(task="multiclass", num_classes=3).to(device)(preds, labels),
-                                        epoch * len(dataloaders[phase]) + running_batch)
-                        
-                        #Precision recall
-                        writer.add_scalar(f'{phase}ing macro Precision {comment}', 
-                                          MulticlassPrecision(num_classes=3).to(device)(preds, labels),
-                                          epoch * len(dataloaders[phase]) + running_batch)
-                        
-                        writer.add_scalar(f'{phase}ing macro Recall {comment}', 
-                                          MulticlassRecall(num_classes=3).to(device)(preds, labels),
-                                          epoch * len(dataloaders[phase]) + running_batch)
-                        
-                        
                     
-                    # if running_batch % int(len(dataloaders[phase])/3)==int(len(dataloaders[phase])/3)-1:
-                    #     # ...log a Matplotlib Figure showing the model's predictions on a
-                    #     # random mini-batch
-                    #     writer.add_figure(f'predictions vs. actuals {comment}',
-                    #                     plot_classes_preds(model, inputs, img_paths, labels, identificator=phase),
-                    #                     global_step=epoch * len(dataloaders[phase]) + running_batch)
-                    #     writer.close()
-                if phase == 'train':
-                    scheduler.step()
+                    writer.add_scalar(f'{phase}ing macro Recall', 
+                                        MulticlassRecall(num_classes=3).to(device)(preds, labels),
+                                        epoch * len(dataloaders[phase]) + running_batch)
+                    
+                    
+                
+                # if running_batch % int(len(dataloaders[phase])/3)==int(len(dataloaders[phase])/3)-1:
+                #     # ...log a Matplotlib Figure showing the model's predictions on a
+                #     # random mini-batch
+                #     writer.add_figure(f'predictions vs. actuals {comment}',
+                #                     plot_classes_preds(model, inputs, img_paths, labels, identificator=phase),
+                #                     global_step=epoch * len(dataloaders[phase]) + running_batch)
+                #     writer.close()
+            if phase == 'train':
+                scheduler.step()
 
-                epoch_loss = running_loss / dataset_sizes[phase]
-                epoch_acc = running_corrects.double() / dataset_sizes[phase]
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
 
-                print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-                # deep copy the model
-                if phase == 'val' and epoch_acc > best_acc:
-                    writer.add_scalar(f'best_accuracy for epoch {comment}',
-                                        epoch_acc,
-                                        epoch)
-                    writer.close()
-                    best_acc = epoch_acc
-                    torch.save(model.state_dict(), best_model_params_path)
+            # deep copy the model
+            if phase == 'val' and epoch_acc > best_acc:
+                writer.add_scalar(f'best_accuracy for epoch',
+                                    epoch_acc,
+                                    epoch)
+                writer.close()
+                best_acc = epoch_acc
+                torch.save(model.state_dict(), chkpt_path)
 
-            print()
 
         time_elapsed = time.time() - since
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
         print(f'Best val Acc: {best_acc:4f}')
 
         # load best model weights
-        model.load_state_dict(torch.load(best_model_params_path))
+        model.load_state_dict(torch.load(chkpt_path))
+    
     return model
 
 
 ####################### Test model with trained f.c. layer ####################
 
 def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader,
-                max_batch: int = 0, return_metrics: bool = True):
+                max_batch: int = 0, return_metrics: bool = True, comment: str =''):
     '''
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
@@ -495,7 +494,11 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
         pr_curve_ax.set_title(f'pr_curve for whole test dset')
+        pr_curve_ax.set_xlabel('Precision')
+        pr_curve_ax.set_ylabel('Recall')
         roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+        roc_ax.set_xlabel('FP Rate')
+        roc_ax.set_ylabel('TP Rate')
 
 
         # Open the saved images using Pillow
@@ -511,7 +514,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         combined_image.paste(pr_curve_img, (roc_img.width+conf_matrix_img.width, 0))
         
         # Save the combined image
-        combined_image.save(f'{run_path}/metrics_for_whole_test_dset.png')
+        combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
 
         return preds, (conf_matrix_fig, conf_matrix_ax), f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
     else: 
@@ -580,11 +583,21 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
 
 
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
+        conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
+        conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
 
-        conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='model confidence')
-        conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['label'], lw=3, alpha=.5, label='label')
+        conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
+                          len(pred_for_shot[pred_for_shot['label']==1])*[1], 
+                          s=2, alpha=1, label='H-mode Truth', color='maroon')
+        
+        conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
+                          len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
+                          s=2, alpha=1, label='ELM Truth', color='royalblue')
+    
+
         conf_time_ax.set_xlabel('t [ms]')
-        conf_time_ax.set_ylabel('H-mod confidence')
+        conf_time_ax.set_ylabel('Confidence')
+
         plt.title(f'shot {shot}')
         conf_time_ax.legend()
 
@@ -593,9 +606,14 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
 
         # place a text box in upper left in axes coords
         roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+        roc_ax.set_xlabel('FP Rate')
+        roc_ax.set_ylabel('TP Rate')
+
         conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
         pr_curve_ax.set_title(f'pr_curve for shot {shot}')
-        
+        pr_curve_ax.set_xlabel('Precision')
+        pr_curve_ax.set_ylabel('Recall')
+
         conf_matrix_fig.set_figheight(conf_time_fig.get_size_inches()[1])
         # Save the figures to temporary files
         #conf_time_fig.savefig(f'{path}/data/time_confidence_for_shot_{shot}.png')
@@ -619,7 +637,7 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         combined_image.paste(pr_curve_img, (roc_img.width, time_confidence_img.height))
         
         # Save the combined image
-        combined_image.save(f'{path}/data/metrics_for_shot_{shot}.png')
+        combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
 
     return f'{path}/data'
 

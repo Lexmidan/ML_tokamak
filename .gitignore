@@ -6,6 +6,7 @@
 /vyzkumny_ukol/data
 /runs
 /old_runs
+vyzkumny_ukol/old_runs
 /spice
 *.ckpt
 # Byte-compiled / optimized / DLL files
