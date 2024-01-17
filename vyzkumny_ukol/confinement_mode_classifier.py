@@ -4,6 +4,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+
 import re
 import seaborn as sns
 import torch
@@ -12,12 +13,11 @@ import torchvision
 from tqdm.notebook import tqdm
 import pytorch_lightning as pl
 from torchvision.io import read_image
-from torch.utils.data import DataLoader, Dataset, random_split, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
 from torch.optim import lr_scheduler
 import torch.nn as nn
 import copy
-from tempfile import TemporaryDirectory
 from torch.utils.tensorboard import SummaryWriter
 import time 
 
@@ -43,43 +43,14 @@ mean = np.array([0.485, 0.456, 0.406])
 std = np.array([0.229, 0.224, 0.225])
 
 
-def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True, ris_option = 1):
-    '''
-    Takes path and lists of shots. Shots not specified in shots_for_testing
-    and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
-    'mode' columns is then transformed to [0,1,2] notation, where 0 stands for L-mode, 1 for H-mode and 2 for ELM
-    '''
-
-    shot_df = pd.DataFrame([])
-
-    for shot in shots:
-        df = pd.read_csv(f'{path}/data/LHmode-detection-shots/LHmode-detection-shot{shot}.csv')
-        df['shot'] = shot
-        shot_df = pd.concat([shot_df, df], axis=0)
-
-
-    df_mode = shot_df['mode'].copy()
-    df_mode[shot_df['mode']=='L-mode'] = 0
-    df_mode[shot_df['mode']=='H-mode'] = 1
-    df_mode[shot_df['mode']=='ELM'] = 2 if use_ELMS else 1
-
-    shot_df['mode'] = df_mode
-    shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
-
-
-    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
-    val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
-    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
-
-    return shot_df, test_df, val_df, train_df
-
 class ImageDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std):
+    def __init__(self, annotations, img_dir, mean, std, h_alpha_window = 0):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
+        self.h_alpha_window = h_alpha_window
+
 
     def __len__(self):
         return len(self.img_labels)
@@ -91,27 +62,62 @@ class ImageDataset(Dataset):
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
 
-        return {'img': normalized_image,'label': label, 'path': img_path, 'time': time}
+        #dealing h_alpha
+        h_window = torch.tensor([])
+        if idx-self.h_alpha_window < 0: 
+            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
+        else:
+            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
 
+        return {'img': normalized_image,'label': label, 'path': img_path, 'time': time, 'h_alpha': h_window}
+
+
+class HalphaDataset(Dataset):
+    '''
+        Parameters:
+            annotations (DataFrame): The DataFrame containing annotations for the dataset.
+            window (int): The size of the time window for fetching sequential data.
+
+    '''
+
+    def __init__(self, annotations, h_alpha_window, img_dir):
+        self.img_labels = annotations #pd.read_csv(annotations_file)
+        self.h_alpha_window = h_alpha_window
+        self.img_dir = img_dir
+    def __len__(self):
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        
+        img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
+        h_window = torch.tensor([])
+        if idx-self.h_alpha_window < 0: 
+            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
+        else:
+            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
+        label = self.img_labels.iloc[idx]['mode']
+        time = self.img_labels.iloc[idx]['time']
+        return {'label': label, 'time': time, 'h_alpha': h_window, 'path':img_path}
 
 
 class TwoImagesDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std, second_img_opt: str = 'prev' or 'RIS2'):
+    def __init__(self, annotations, img_dir, mean, std, second_img_opt: str = 'RIS2', h_alpha_window = 0):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
         self.option = second_img_opt
+        self.h_alpha_window = h_alpha_window
 
     def __len__(self):
         return len(self.img_labels)
 
     def __getitem__(self, idx):
-
         first_img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
         first_image = read_image(first_img_path).float()
-        normalized_first_image = (first_image - self.mean[:, None, None])/(255 * self.std[:, None, None])
+        normalized_first_image = (first_image/255 - self.mean[:, None, None])/(self.std[:, None, None])
         
+        #Dealing second image
         if self.option == 'RIS2':
             second_img_path = first_img_path.replace('RIS1', 'RIS2')
         elif  idx-1 < 0: #If previous img doesn't exist, use the same image twice
@@ -119,16 +125,22 @@ class TwoImagesDataset(Dataset):
         else:
             second_img_path = os.path.join(self.img_dir, self.img_labels.loc[idx-1, 'filename'])
         second_image = read_image(second_img_path).float()
-        normalized_second_image = (second_image - self.mean[:, None, None])/(255 * self.std[:, None, None])
-        
+        normalized_second_image = (second_image/255 - self.mean[:, None, None])/(self.std[:, None, None])
+
+        #dealing h_alpha
+        h_window = torch.tensor([])
+        if idx-self.h_alpha_window < 0: 
+            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
+        else:
+            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
+
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
+  
         labeled_imgs_dict = {'img': torch.cat((normalized_first_image.unsqueeze(0), normalized_second_image.unsqueeze(0)), dim=0),
-                             'label':label, 'path':first_img_path, 'time':time}
+                             'label':label, 'path':first_img_path, 'time':time, 'h_alpha': h_window}
 
         return labeled_imgs_dict
-
-
 
     
 class TwoImagesModel(nn.Module):
@@ -170,9 +182,42 @@ class TwoImagesModel(nn.Module):
         
         
         return x   
+    
+
+def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list,
+                            use_ELMS: bool = True):
+    '''
+    Takes path and lists of shots. Shots not specified in shots_for_testing
+    and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
+    'mode' columns is then transformed to [0,1,2] notation, where 0 stands for L-mode, 1 for H-mode and 2 for ELM
+    '''
+
+    shot_df = pd.DataFrame([])
+
+    for shot in shots:
+        df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
+        df['shot'] = shot
+        shot_df = pd.concat([shot_df, df], axis=0)
 
 
-def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = True):
+    df_mode = shot_df['mode'].copy()
+    df_mode[shot_df['mode']=='L-mode'] = 0
+    df_mode[shot_df['mode']=='H-mode'] = 1
+    df_mode[shot_df['mode']=='ELM'] = 2 if use_ELMS else 1
+
+    shot_df['mode'] = df_mode
+    shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
+
+
+    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
+    val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
+    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
+
+    return shot_df, test_df, val_df, train_df
+
+
+def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = True,
+                only_halpha: bool = False, second_img_opt: str = None, h_alpha_window: int = 0, ris_option: str = 'RIS1'):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -180,11 +225,33 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
         df: should contain columns with time, confinement mode in [0,1,2] notation and filename of the images
         path: path where images are located
         batch_size: batch size
-    Returns: 
+        balance_data: uses sampler if True
+        shuffle: shuffles data if True
+        second_img_opt: Either RIS2 image taken in the same time as RIS1, or RIS1 taken in time t-dt
+        only_halpha: returns dataset with time label and h_alpha
+        h_alpha_window: how many datapoints of h_alpha from previous times will be used
+    Returns:  
         dataloader: dloader, which returns each class with the same probability
     """
+    if ris_option == 'RIS2':
+        df['filename'] = df['filename'].str.replace('RIS1', 'RIS2')
 
-    dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, std=std)
+    if shuffle and balance_data:
+        raise Exception("Can't use data shuffling and balancing simultaneously")
+    
+    if only_halpha:
+        dataset = HalphaDataset(annotations=df, h_alpha_window=h_alpha_window, img_dir=path)
+    elif second_img_opt == None:
+        dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, 
+                               std=std, h_alpha_window=h_alpha_window)
+    elif second_img_opt == 'RIS2':
+        dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
+                                    second_img_opt='RIS2', h_alpha_window=h_alpha_window)
+    elif second_img_opt == 'RIS1':
+        dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
+                                    second_img_opt='RIS1', h_alpha_window=h_alpha_window)
+    else:
+        raise Exception("Can't initiate a dataset with given kwargs")
 
     if balance_data:
         mode_weight = (1/df['mode'].value_counts()).values
@@ -198,36 +265,6 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
 
 
 #Then calculate weights
-def get_two_imgs_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True,
-                 shuffle: bool = False, second_img_opt: str = 'RIS2' or 'prev'):
-    """
-    Gets dataframe, path and batch size, returns "equiprobable" dataloader
-
-    Args:
-        df: should contain columns with time, confinement mode in [0,1,2] notation and filename of the images
-        path: path where images are located
-        batch_size: batch size
-    Returns: 
-        dataloader: dloader, which returns each class with the same probability
-    """
-    if shuffle and balance_data:
-        raise Exception("Can't use data shuffling and balancing simultaneously")
-
-    dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, second_img_opt=second_img_opt)
-    
-
-    if balance_data:
-        mode_weight = (1/df['mode'].value_counts()).values
-        sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
-        sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
-        
-        dataloader = DataLoader(dataset, batch_size, sampler=sampler)
-        
-    else: 
-        dataloader = DataLoader(dataset, batch_size, shuffle=shuffle)
-
-    return dataloader
-
 
 def imshow(inp, title=None):
     """Display image for Tensor."""
@@ -281,6 +318,7 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
                     color=("green" if preds[idx]==labels[idx].item() else "red"))
     #plt.savefig(f'{path}/preds_vs_actuals/preds_vs_actuals_{timestamp}_{identificator}.jpg')
     return fig
+
 
 ##################### Define model training function ##########################
 
@@ -339,7 +377,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
                     #TODO: inputs.type. 
-                    _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
+                    _, preds = torch.max(outputs, 1)
                     loss = criterion(outputs, labels)
 
                     # backward + optimize only if in training phase
@@ -378,7 +416,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
                     
-                
                 # if running_batch % int(len(dataloaders[phase])/3)==int(len(dataloaders[phase])/3)-1:
                 #     # ...log a Matplotlib Figure showing the model's predictions on a
                 #     # random mini-batch
@@ -386,6 +423,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 #                     plot_classes_preds(model, inputs, img_paths, labels, identificator=phase),
                 #                     global_step=epoch * len(dataloaders[phase]) + running_batch)
                 #     writer.close()
+                    
             if phase == 'train':
                 scheduler.step()
 
@@ -405,12 +443,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
 
         time_elapsed = time.time() - since
-        print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-        print(f'Best val Acc: {best_acc:4f}')
-
         # load best model weights
         model.load_state_dict(torch.load(chkpt_path))
-    
+    print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val Acc: {best_acc:4f}')
     return model
 
 
@@ -460,10 +496,12 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
 
     if return_metrics:
         softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
+
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
         conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
+
         #F1
         f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
 
@@ -471,14 +509,17 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
         recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
         #precision(logits_df, y_df.int())
-         #Precision_recall curve
+
+        #Precision_recall curve
         pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
         pr_curve.update(softmax_out, y_df)
         pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
+
         #ROC metric
         mcroc = MulticlassROC(num_classes=3, thresholds=64)
         mcroc.update(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), y_df)
         roc_fig, roc_ax = mcroc.plot(score=True)
+
         #Accuracy
         accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
 
@@ -516,9 +557,11 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         # Save the combined image
         combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
 
-        return preds, (conf_matrix_fig, conf_matrix_ax), f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
+        return {'prediction_df':preds, 'confusion_matrix':(conf_matrix_fig, conf_matrix_ax), 'f1':f1, 
+                'precision': precision, 'recall': recall, 'accuracy': accuracy, 
+                'PR': (pr_curve_fig, pr_curve_ax), 'ROC': (roc_fig, roc_ax)}
     else: 
-        return preds
+        return {'prediction_df':preds}
     
 
 
