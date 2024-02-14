@@ -98,7 +98,8 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int,
         Path to created file name.
     """
 
-    filename = f"{path}/RIS{ris}_{shot}_t={time:.1f}.png"
+    filename = path.joinpath(f"RIS{ris}_{shot}_t={time:.1f}.png") 
+
     if not(just_names):
         img = Image.fromarray((frame.data*255).astype('uint8')).convert('RGB')
         img.save(filename, format=None)
@@ -158,7 +159,7 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int,
 
 
 def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bool=False,
-                  variant: str = 'seidl_2023'):
+                  variant: str = 'seidl_2023', save_ris2: bool=True):
     '''
     Processes multiple shots in a row.
 
@@ -169,14 +170,22 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
     '''
     for shot in tqdm(shots):
         print('Working on shot ', shot)
-        out_path = Path('./imgs')
+
+        out_path = Path(f'./imgs/{shot}')
+        if not os.path.exists(out_path):
+            os.mkdir(out_path, mode=0o777)
+
         ris1_data = load_RIS_data(shot, 1)
-        ris2_data = load_RIS_data(shot, 2)
+        
 
         ris1_names = save_ris_images_to_folder(ris1_data, path=out_path, ris=1, shot=shot, 
-                                               use_discharge_duration=True, just_names=False)
-        ris2_names = save_ris_images_to_folder(ris2_data, path=out_path, ris=2, shot=shot, 
-                                               use_discharge_duration=True, just_names=False)
+                                               use_discharge_duration=use_discharge_duration, 
+                                               just_names=just_names)
+        if save_ris2:
+            ris2_data = load_RIS_data(shot, 2)
+            ris2_names = save_ris_images_to_folder(ris2_data, path=out_path, ris=2, shot=shot, 
+                                                use_discharge_duration=use_discharge_duration, 
+                                                just_names=just_names)
 
         #contains time and the state of the plasma (L-mode, H-mode, ELM)
         LorH = pd.DataFrame(data={'mode':np.full(len(ris1_data), 'L-mode')}, 
@@ -216,7 +225,7 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
 
         #Appending columns with paths of the RIS imgs
         LorH['filename'] = np.array(ris1_names)
-        LorH = add_average_halpha_column(LorH, shot)
+        #LorH = add_average_halpha_column(LorH, shot)
         LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
     

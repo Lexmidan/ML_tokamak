@@ -10,11 +10,12 @@ import seaborn as sns
 import torch
 import pandas as pd
 import torchvision
-from tqdm.notebook import tqdm
+from tqdm.auto import tqdm
 import pytorch_lightning as pl
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
+from torchmetrics.classification import BinaryPrecision, BinaryRecall, F1Score, ConfusionMatrix, BinaryPrecisionRecallCurve, BinaryROC
 from torch.optim import lr_scheduler
 import torch.nn as nn
 import copy
@@ -145,7 +146,7 @@ class TwoImagesDataset(Dataset):
     
 class TwoImagesModel(nn.Module):
     """
-    Initializes the TwoImagesModel composed of two pretrained resnet. 
+    Initializes the TwoImagesModel composed of two pretrained resnet.
     Removes last fc layer and connects the logits with Sequential.
     Can be used for models trained RIS1 and RIS2 respectively, or for two subsequential images from RIS1
 
@@ -160,10 +161,10 @@ class TwoImagesModel(nn.Module):
         num_ftrs_A = modelA.fc.in_features
         num_ftrs_B = modelB.fc.in_features
 
-        self.modelA = copy.deepcopy(modelA)#nn.Sequential(*list(modelA.children())[:-1])   # Exclude the last layer
+        self.modelA = copy.deepcopy(modelA)
         self.modelA.fc = nn.Linear(num_ftrs_A, 256)
 
-        self.modelB = copy.deepcopy(modelB)#nn.Sequential(*list(modelB.children())[:-1]) 
+        self.modelB = copy.deepcopy(modelB)
         self.modelB.fc = nn.Linear(num_ftrs_B, 256)
 
         self.classifier = nn.Sequential(
@@ -197,6 +198,7 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, sho
     for shot in shots:
         df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         df['shot'] = shot
+        df = df[:-100] #!!! TODO: I cut the dataframe bacuase RIS2 sometimes ends earlier than RIS1
         shot_df = pd.concat([shot_df, df], axis=0)
 
 
@@ -257,9 +259,9 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
         mode_weight = (1/df['mode'].value_counts()).values
         sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
         sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
-        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers = 8)
     else: 
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers = 8)
 
     return dataloader
 
@@ -340,9 +342,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
         writer: tensorboard writer
     '''
     since = time.time()
-
-
-    torch.save(model.state_dict(), chkpt_path)
     best_acc = 0.0
 
     for epoch in range(num_epochs):
@@ -398,8 +397,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     
                     #Training/validation loss
                     writer.add_scalar(f'{phase}ing loss',
-                                    running_loss / num_of_samples,
-                                    epoch * len(dataloaders[phase]) + running_batch)
+                                    loss)
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
@@ -450,7 +448,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     return model
 
 
-####################### Test model with trained f.c. layer ####################
+####################### Test model #############
 
 def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader,
                 max_batch: int = 0, return_metrics: bool = True, comment: str =''):
@@ -474,7 +472,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
     preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
-    pattern = re.compile(r'RIS1_(\d+)_t=')
+    pattern = re.compile(r'RIS[12]_(\d+)_t=')
     batch_index = 0 #iterator
     for batch in tqdm(test_dataloader, desc='Processing batches'):
         batch_index +=1
@@ -493,36 +491,28 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
 
         if max_batch!=0 and batch_index>max_batch:
             break
-
     if return_metrics:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
-
-        #Confusion matrix
-        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
+        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values), dim=1)
+        
+        # Confusion matrix
+        confusion_matrix_metric = ConfusionMatrix(task="binary", num_classes=2)
         confusion_matrix_metric.update(y_hat_df, y_df)
-        conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
+        conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
 
-        #F1
-        f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
+        # F1
+        f1 = F1Score(task = 'binary', num_classes=2)(y_hat_df, y_df)
 
-        #Precision
-        precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
-        recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
-        #precision(logits_df, y_df.int())
+        # Precision and Recall
+        precision = BinaryPrecision()(y_hat_df, y_df)
+        recall = BinaryRecall()(y_hat_df, y_df)
 
-        #Precision_recall curve
-        pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
-        pr_curve.update(softmax_out, y_df)
-        pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
+        # Precision-Recall curve
+        pr_roc_auc = binary_pr_roc_auc(y_df, softmax_out[:,1])
 
-        #ROC metric
-        mcroc = MulticlassROC(num_classes=3, thresholds=64)
-        mcroc.update(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), y_df)
-        roc_fig, roc_ax = mcroc.plot(score=True)
+        # Accuracy
+        accuracy = len(preds[preds['prediction'] == preds['label']]) / len(preds)
 
-        #Accuracy
-        accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
-
+        
         textstr = '\n'.join((
             f'Whole test dset',
             r'threshhold = 0.5:',
@@ -534,18 +524,20 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
-        pr_curve_ax.set_title(f'pr_curve for whole test dset')
-        pr_curve_ax.set_xlabel('Precision')
-        pr_curve_ax.set_ylabel('Recall')
-        roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
-        roc_ax.set_xlabel('FP Rate')
-        roc_ax.set_ylabel('TP Rate')
+
+        pr_roc_auc['pr_curve'][1].set_title(f'pr_curve for whole test dset')
+        pr_roc_auc['pr_curve'][1].set_xlabel('Precision')
+        pr_roc_auc['pr_curve'][1].set_ylabel('Recall')
+
+        pr_roc_auc['roc_curve'][1].text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+        pr_roc_auc['roc_curve'][1].set_xlabel('FP Rate')
+        pr_roc_auc['roc_curve'][1].set_ylabel('TP Rate')
 
 
         # Open the saved images using Pillow
-        roc_img = matplotlib_figure_to_pil_image(roc_fig)
+        roc_img = matplotlib_figure_to_pil_image(pr_roc_auc['roc_curve'][0])
         conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
-        pr_curve_img = matplotlib_figure_to_pil_image(pr_curve_fig)
+        pr_curve_img = matplotlib_figure_to_pil_image(pr_roc_auc['pr_curve'][0])
         combined_image = Image.new('RGB', (conf_matrix_img.width + pr_curve_img.width + roc_img.width,\
                                             conf_matrix_img.height))
 
@@ -557,11 +549,11 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         # Save the combined image
         combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
 
-        return {'prediction_df':preds, 'confusion_matrix':(conf_matrix_fig, conf_matrix_ax), 'f1':f1, 
-                'precision': precision, 'recall': recall, 'accuracy': accuracy, 
-                'PR': (pr_curve_fig, pr_curve_ax), 'ROC': (roc_fig, roc_ax)}
-    else: 
-        return {'prediction_df':preds}
+        return {'prediction_df': preds, 'confusion_matrix': (conf_matrix_fig, conf_matrix_ax), 'f1': f1,
+                'precision': precision, 'recall': recall, 'accuracy': accuracy,
+                'PR_ROC_AUC': pr_roc_auc}
+    else:
+        return {'prediction_df': preds}
     
 
 
@@ -586,32 +578,20 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         pred_for_shot = results_df[results_df['shot']==shot]
         softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
 
-        preds_tensor = torch.tensor(pred_for_shot['prediction'].values.astype(float))
-        labels_tensor = torch.tensor(pred_for_shot['label'].values.astype(int))
+        y_hat_df = torch.tensor(pred_for_shot['prediction'].values.astype(float))
+        y_df = torch.tensor(pred_for_shot['label'].values.astype(int))
         
         #Confusion matrix
-        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
-        confusion_matrix_metric.update(preds_tensor, labels_tensor)
+        confusion_matrix_metric = ConfusionMatrix(task="binary", num_classes=2)
+        confusion_matrix_metric.update(y_hat_df, y_df)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
-        
-        #Precision_recall curve
-        pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
-        pr_curve.update(softmax_out, labels_tensor)
-        pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
 
-        #ROC metric
-        mcroc = MulticlassROC(num_classes=3, thresholds=64)
-        mcroc.update(torch.tensor(pred_for_shot[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), labels_tensor)
-        roc_fig, roc_ax = mcroc.plot(score=True)
+        # F1
+        f1 = F1Score(task = 'binary', num_classes=2)(y_hat_df, y_df)
 
-        #f1 score
-        f1 = F1Score(task="multiclass", num_classes=3)(preds_tensor, labels_tensor)
-
-        #Precision
-        precision = MulticlassPrecision(num_classes=3)(preds_tensor, labels_tensor)
-
-        #recall
-        recall = MulticlassRecall(num_classes=3)(preds_tensor, labels_tensor)
+        # Precision and Recall
+        precision = BinaryPrecision()(y_hat_df, y_df)
+        recall = BinaryRecall()(y_hat_df, y_df)
 
         #accuracy
         accuracy = len(pred_for_shot[pred_for_shot['prediction']==pred_for_shot['label']])/len(pred_for_shot)
@@ -639,45 +619,28 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
     
 
         conf_time_ax.set_xlabel('t [ms]')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        conf_time_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_time_ax.set_ylabel('Confidence')
 
         plt.title(f'shot {shot}')
         conf_time_ax.legend()
-
-        # these are matplotlib.patch.Patch properties
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-
-        # place a text box in upper left in axes coords
-        roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
-        roc_ax.set_xlabel('FP Rate')
-        roc_ax.set_ylabel('TP Rate')
+        
 
         conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
-        pr_curve_ax.set_title(f'pr_curve for shot {shot}')
-        pr_curve_ax.set_xlabel('Precision')
-        pr_curve_ax.set_ylabel('Recall')
-
         conf_matrix_fig.set_figheight(conf_time_fig.get_size_inches()[1])
-        # Save the figures to temporary files
-        #conf_time_fig.savefig(f'{path}/data/time_confidence_for_shot_{shot}.png')
-        #roc_fig.savefig(f'{path}/data/roc_for_shot_{shot}.png')
-        #conf_matrix_fig.savefig(f'{path}/data/confusion_matrix_for_shot_{shot}.png')
-        #pr_curve_fig.savefig(f'{path}/data/pr_curve_for_shot_{shot}.png')
+
 
         # Open the saved images using Pillow
         time_confidence_img = matplotlib_figure_to_pil_image(conf_time_fig)
-        roc_img = matplotlib_figure_to_pil_image(roc_fig)
         conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
-        pr_curve_img = matplotlib_figure_to_pil_image(pr_curve_fig)
 
         combined_image = Image.new('RGB', (time_confidence_img.width + conf_matrix_img.width,
-                                            time_confidence_img.height + roc_img.height))
+                                            time_confidence_img.height))
 
         # Paste the saved images into the combined image
         combined_image.paste(time_confidence_img, (0, 0))
         combined_image.paste(conf_matrix_img, (time_confidence_img.width, 0))
-        combined_image.paste(roc_img, (0, time_confidence_img.height))
-        combined_image.paste(pr_curve_img, (roc_img.width, time_confidence_img.height))
         
         # Save the combined image
         combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
@@ -714,3 +677,57 @@ def matplotlib_figure_to_pil_image(fig):
     image = Image.frombuffer("RGBA", canvas.get_width_height(), buf, "raw", "RGBA", 0, 1)
 
     return image
+
+
+def binary_pr_roc_auc(y_true, y_pred):
+    # Sort predictions and corresponding labels
+    sorted_indices = torch.argsort(y_pred, descending=True)
+    sorted_pred = y_pred[sorted_indices]
+    sorted_true = y_true[sorted_indices]
+
+    # Calculate TP, FP, FN for each threshold
+    true_positives = torch.cumsum(sorted_true, dim=0)
+    false_positives = torch.cumsum(1 - sorted_true, dim=0)
+    total_positives = true_positives[-1]
+    total_negatives = false_positives[-1]
+
+    # Precision and Recall calculations
+    precision = true_positives / (true_positives + false_positives)
+    recall = true_positives / total_positives
+
+    fpr = false_positives / total_negatives
+    tpr = true_positives / total_positives
+
+
+    #Calculate AUC
+    auc_pr = calculate_auc(recall, precision)
+    auc_roc = calculate_auc(fpr, tpr)
+
+
+    fig_pr, ax_pr = plt.subplots()
+    ax_pr.plot(recall, precision, label=f'AUC = {auc_pr:.3f}')
+    ax_pr.set_xlabel('Recall')
+    ax_pr.set_ylabel('Precision')
+    ax_pr.set_title('Binary Precision-Recall Curve')
+    ax_pr.legend()
+
+
+    fig_roc, ax_roc = plt.subplots()
+    ax_roc.plot(fpr, tpr, label=f'AUC = {auc_roc:.3f}')
+    ax_roc.set_xlabel("False Positive Rate")
+    ax_roc.set_ylabel("True Positive Rate")
+    ax_roc.set_title('ROC Curve')
+    ax_roc.legend()
+
+    return {'pr_curve':[fig_pr, ax_pr],'roc_curve':[fig_roc, ax_roc], 
+            'roc_auc':auc_roc, 'pr_auc':auc_pr}
+
+
+def calculate_auc(x, y):
+    # Convert to numpy arrays for integration
+    x_np = x.numpy()
+    y_np =y.numpy()
+
+    # Use numpy's trapezoidal rule integration
+    auc = np.trapz(y_np, x_np)
+    return auc
