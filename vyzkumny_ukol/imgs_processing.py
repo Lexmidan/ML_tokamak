@@ -107,7 +107,7 @@ def save_frame(path: Path, frame: xr.DataArray, ris: int,
     return filename
 
 def discharge_duration(shot: int, threshold: float = 1e4) -> Tuple[float, float]:
-    """Find discharge durationS
+    """Find discharge duration
 
     Args:
         shot: Queried shot.
@@ -117,8 +117,8 @@ def discharge_duration(shot: int, threshold: float = 1e4) -> Tuple[float, float]
         Tuple[plasma_start, plasma_end]
     """
 
-    s = cdbxr.Shot(shot) #load the whole shot
-    ipla = s["I_plasma"] #load current
+    s = cdbxr.Shot(shot)
+    ipla = s["I_plasma"]
     plasma_time = ipla[abs(ipla)>threshold].time.data
     start = plasma_time[0]
     end = plasma_time[-1]
@@ -146,9 +146,9 @@ def save_ris_images_to_folder(data: int, shot, path: Path, ris: int,
     if use_discharge_duration:
         start, end = discharge_duration(shot, 1e4)
         dem_data = flip_image(demosaic(data).sel(time=slice(start, end)))
-
     else:
         dem_data = flip_image(demosaic(data))
+
     for frame in tqdm(dem_data, total=len(dem_data), desc='Saving images'):
         filename = save_frame(path=path, frame=frame, ris=ris, shot=shot, 
                               time=frame.time.data, just_names=just_names)
@@ -225,7 +225,7 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
 
         #Appending columns with paths of the RIS imgs
         LorH['filename'] = np.array(ris1_names)
-        #LorH = add_average_halpha_column(LorH, shot)
+        LorH = add_average_halpha_column(LorH, shot)
         LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
     
@@ -241,8 +241,8 @@ def add_average_halpha_column(lh_mode_df, shot):
     """
     h_alpha_signal = cdb.get_signal(f"H_alpha/SPECTROMETRY_RAW:{shot}")
     h_alpha_df = pd.DataFrame({'time':h_alpha_signal.time_axis.data, 'h_alpha':h_alpha_signal.data}) 
-    h_alpha_df = h_alpha_df[np.logical_and(h_alpha_df['time']>lh_mode_df['time'].iloc[0] - 1, 
-                                           h_alpha_df['time']<lh_mode_df['time'].iloc[-1] +1)]
+    h_alpha_df = h_alpha_df[np.logical_and(h_alpha_df['time'] > lh_mode_df.index[0] - 1, 
+                                           h_alpha_df['time'] < lh_mode_df.index[-1] + 1)]
 
     def calculate_average_current_for_time_range(start_time, end_time, current_data):
         """Calculate the average current for a given time range."""
@@ -253,11 +253,11 @@ def add_average_halpha_column(lh_mode_df, shot):
             return None
 
     # Calculate the time step in lh_mode_df
-    time_step = 0.2
+    time_step = lh_mode_df.index[11] - lh_mode_df.index[10]
 
     # Calculate the average current for each time step in lh_mode_df
     average_currents = []
-    for time_point in lh_mode_df['time']:
+    for time_point in lh_mode_df.index:
         start_time = time_point
         end_time = start_time + time_step
         average_current = calculate_average_current_for_time_range(start_time, end_time, h_alpha_df)

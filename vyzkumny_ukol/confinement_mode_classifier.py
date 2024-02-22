@@ -4,13 +4,11 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-
 import re
-import seaborn as sns
 import torch
 import pandas as pd
 import torchvision
-from tqdm.auto import tqdm
+from tqdm import tqdm
 import pytorch_lightning as pl
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -22,19 +20,18 @@ import copy
 from torch.utils.tensorboard import SummaryWriter
 import time 
 
-sns.reset_orig()
-sns.set()
 
 
 
-# Setting the seed
-pl.seed_everything(42)
-# Ensure that all operations are deterministic on GPU (if used) for reproducibility
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
 
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-print("Device:", device)
+# # Setting the seed
+# pl.seed_everything(42)
+# # Ensure that all operations are deterministic on GPU (if used) for reproducibility
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
+
+# device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+# print("Device:", device)
 
 
 
@@ -45,12 +42,11 @@ std = np.array([0.229, 0.224, 0.225])
 
 
 class ImageDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std, h_alpha_window = 0):
+    def __init__(self, annotations, img_dir, mean, std):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
-        self.h_alpha_window = h_alpha_window
 
 
     def __len__(self):
@@ -62,15 +58,7 @@ class ImageDataset(Dataset):
         normalized_image = (image - self.mean[:, None, None])/(255 * self.std[:, None, None])
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
-
-        #dealing h_alpha
-        h_window = torch.tensor([])
-        if idx-self.h_alpha_window < 0: 
-            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
-        else:
-            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
-
-        return {'img': normalized_image,'label': label, 'path': img_path, 'time': time, 'h_alpha': h_window}
+        return {'img': normalized_image,'label': label, 'path': img_path, 'time': time}
 
 
 class HalphaDataset(Dataset):
@@ -85,17 +73,19 @@ class HalphaDataset(Dataset):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.h_alpha_window = h_alpha_window
         self.img_dir = img_dir
+
     def __len__(self):
         return len(self.img_labels)
 
     def __getitem__(self, idx):
-        
         img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
         h_window = torch.tensor([])
+        
         if idx-self.h_alpha_window < 0: 
             h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
         else:
             h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
+
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
         return {'label': label, 'time': time, 'h_alpha': h_window, 'path':img_path}
@@ -218,8 +208,11 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, sho
     return shot_df, test_df, val_df, train_df
 
 
-def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_data: bool = True, shuffle: bool = True,
-                only_halpha: bool = False, second_img_opt: str = None, h_alpha_window: int = 0, ris_option: str = 'RIS1'):
+def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, 
+                balance_data: bool = True, shuffle: bool = True,
+                only_halpha: bool = False, second_img_opt: str = None, 
+                h_alpha_window: int = 0, ris_option: str = 'RIS1',
+                num_workers: int = 0):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -245,7 +238,7 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
         dataset = HalphaDataset(annotations=df, h_alpha_window=h_alpha_window, img_dir=path)
     elif second_img_opt == None:
         dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, 
-                               std=std, h_alpha_window=h_alpha_window)
+                               std=std)
     elif second_img_opt == 'RIS2':
         dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
                                     second_img_opt='RIS2', h_alpha_window=h_alpha_window)
@@ -259,9 +252,15 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, balance_
         mode_weight = (1/df['mode'].value_counts()).values
         sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
         sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
-        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers = 8)
+        dataloader = DataLoader(dataset, 
+                                batch_size=batch_size, 
+                                sampler=sampler, 
+                                num_workers = num_workers)
     else: 
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers = 8)
+        dataloader = DataLoader(dataset, 
+                                batch_size=batch_size, 
+                                shuffle=shuffle, 
+                                num_workers = num_workers)
 
     return dataloader
 
@@ -326,7 +325,7 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
                  writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
-                 chkpt_path=os.getcwd()):
+                 chkpt_path=os.getcwd(), device = torch.device("cuda:0")):
     '''
     Trains the model
 
@@ -359,11 +358,11 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             running_corrects = 0
             num_of_samples = 0
             running_batch = 0
+
             # Iterate over data.
-            #TODO: eliminate the need in that dummy iterative for tensorboard part
             for batch in tqdm(dataloaders[phase]):
                 
-                inputs = batch['img'].to(device).float() # #TODO: is it smart to convert double to float here? 
+                inputs = batch['img'].to(device).float() 
                 labels = batch['label'].to(device)
                 
                 running_batch += 1
@@ -391,13 +390,12 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 
                 
                 #tensorboard part
-                
                 if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
                     # ...log the running loss
                     
                     #Training/validation loss
-                    writer.add_scalar(f'{phase}ing loss',
-                                    loss)
+                    writer.add_scalar(f'{phase}ing loss', loss,
+                                    epoch * len(dataloaders[phase]) + running_batch)
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
@@ -430,15 +428,12 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
             print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-            # deep copy the model
-            if phase == 'val' and epoch_acc > best_acc:
-                writer.add_scalar(f'best_accuracy for epoch',
-                                    epoch_acc,
-                                    epoch)
+            if phase == 'val':
+                writer.add_scalar(f'accuracy', epoch_acc, epoch)
                 writer.close()
-                best_acc = epoch_acc
+                if epoch_acc > best_acc:
+                    best_acc = epoch_acc
                 torch.save(model.state_dict(), chkpt_path)
-
 
         time_elapsed = time.time() - since
         # load best model weights
@@ -451,7 +446,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 ####################### Test model #############
 
 def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader,
-                max_batch: int = 0, return_metrics: bool = True, comment: str =''):
+                max_batch: int = 0, return_metrics: bool = True, comment: str ='', device = torch.device("cuda:0")):
     '''
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
@@ -525,14 +520,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
 
-        pr_roc_auc['pr_curve'][1].set_title(f'pr_curve for whole test dset')
-        pr_roc_auc['pr_curve'][1].set_xlabel('Precision')
-        pr_roc_auc['pr_curve'][1].set_ylabel('Recall')
-
         pr_roc_auc['roc_curve'][1].text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
-        pr_roc_auc['roc_curve'][1].set_xlabel('FP Rate')
-        pr_roc_auc['roc_curve'][1].set_ylabel('TP Rate')
-
 
         # Open the saved images using Pillow
         roc_img = matplotlib_figure_to_pil_image(pr_roc_auc['roc_curve'][0])
@@ -612,16 +600,19 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==1])*[1], 
                           s=2, alpha=1, label='H-mode Truth', color='maroon')
-        
+
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
                           s=2, alpha=1, label='ELM Truth', color='royalblue')
-    
 
         conf_time_ax.set_xlabel('t [ms]')
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         conf_time_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_time_ax.set_ylabel('Confidence')
+
+        # Add grid to the plot
+        conf_time_ax.grid(True)
+
 
         plt.title(f'shot {shot}')
         conf_time_ax.legend()
@@ -698,29 +689,33 @@ def binary_pr_roc_auc(y_true, y_pred):
     fpr = false_positives / total_negatives
     tpr = true_positives / total_positives
 
-
-    #Calculate AUC
+    # Calculate AUC
     auc_pr = calculate_auc(recall, precision)
     auc_roc = calculate_auc(fpr, tpr)
 
-
     fig_pr, ax_pr = plt.subplots()
-    ax_pr.plot(recall, precision, label=f'AUC = {auc_pr:.3f}')
+    scatter_pr = ax_pr.scatter(recall, precision, c=sorted_pred, cmap='viridis', s=2)
     ax_pr.set_xlabel('Recall')
     ax_pr.set_ylabel('Precision')
-    ax_pr.set_title('Binary Precision-Recall Curve')
-    ax_pr.legend()
-
+    ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
+    
 
     fig_roc, ax_roc = plt.subplots()
-    ax_roc.plot(fpr, tpr, label=f'AUC = {auc_roc:.3f}')
+    scatter_roc = ax_roc.scatter(fpr, tpr, c=sorted_pred, cmap='viridis', s=2)
     ax_roc.set_xlabel("False Positive Rate")
     ax_roc.set_ylabel("True Positive Rate")
-    ax_roc.set_title('ROC Curve')
-    ax_roc.legend()
+    ax_roc.set_title(f'ROC AUC: {auc_roc:.4f}')
 
-    return {'pr_curve':[fig_pr, ax_pr],'roc_curve':[fig_roc, ax_roc], 
-            'roc_auc':auc_roc, 'pr_auc':auc_pr}
+
+    # Add colorbar
+    cbar_pr = fig_pr.colorbar(scatter_pr)
+    cbar_pr.set_label('Threshold')
+
+    cbar_roc = fig_roc.colorbar(scatter_roc)
+    cbar_roc.set_label('Threshold')
+
+    return {'pr_curve': [fig_pr, ax_pr], 'roc_curve': [fig_roc, ax_roc],
+            'roc_auc': auc_roc, 'pr_auc': auc_pr}
 
 
 def calculate_auc(x, y):
