@@ -128,7 +128,8 @@ class TwoImagesDataset(Dataset):
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
   
-        labeled_imgs_dict = {'img': torch.cat((normalized_first_image.unsqueeze(0), normalized_second_image.unsqueeze(0)), dim=0),
+        labeled_imgs_dict = {'img': torch.cat((normalized_first_image.unsqueeze(0), 
+                                               normalized_second_image.unsqueeze(0)), dim=0),
                              'label':label, 'path':first_img_path, 'time':time, 'h_alpha': h_window}
 
         return labeled_imgs_dict
@@ -227,6 +228,10 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32,
         h_alpha_window: how many datapoints of h_alpha from previous times will be used
     Returns:  
         dataloader: dloader, which returns each class with the same probability
+
+    Example:
+    >>> get_dloader(df, path, batch_size=32, balance_data=True, shuffle=True, only_halpha=False, second_img_opt=None, h_alpha_window=0)
+
     """
     if ris_option == 'RIS2':
         df['filename'] = df['filename'].str.replace('RIS1', 'RIS2')
@@ -330,15 +335,19 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     Trains the model
 
     Args:
-        model: 
-        criterion: 
-        optimizer: 
-        scheduler: 
-        num_epochs: 
-        comment: 
-        dataloaders: dictionary containing train and validation dataloaders
-        dataset_sizes: dictionary containing lengths of train and validation datasets
-        writer: tensorboard writer
+        model: The neural network model to be trained.
+        criterion: The loss function used for training.
+        optimizer: The optimizer used for updating the model's parameters.
+        scheduler: The learning rate scheduler.
+        dataloaders: A dictionary containing train and validation dataloaders.
+        writer: The tensorboard writer for logging.
+        dataset_sizes: A dictionary containing the lengths of train and validation datasets.
+        num_epochs: The number of epochs to train the model.
+        chkpt_path: The path to save the best model checkpoint.
+        device: The device to run the training on.
+
+    Returns:
+        The trained model.
     '''
     since = time.time()
     best_acc = 0.0
@@ -358,6 +367,9 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             running_corrects = 0
             num_of_samples = 0
             running_batch = 0
+
+            # Save parameters before changing them. We will use this to calculate the average parameter change
+            prev_params = {name: param.clone().detach() for name, param in model.named_parameters()}
 
             # Iterate over data.
             for batch in tqdm(dataloaders[phase]):
@@ -380,7 +392,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
-                        loss.backward()
+                        loss.backward()   
                         optimizer.step()
 
                 # statistics
@@ -399,26 +411,31 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
-                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, labels),
+                                    F1Score(task="multiclass", num_classes=2).to(device)(preds, labels),
                                     epoch * len(dataloaders[phase]) + running_batch)
                     
                     #Precision recall
                     writer.add_scalar(f'{phase}ing macro Precision', 
-                                        MulticlassPrecision(num_classes=3).to(device)(preds, labels),
+                                        MulticlassPrecision(num_classes=2).to(device)(preds, labels),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
                     writer.add_scalar(f'{phase}ing macro Recall', 
-                                        MulticlassRecall(num_classes=3).to(device)(preds, labels),
+                                        MulticlassRecall(num_classes=2).to(device)(preds, labels),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
+                    #Average parameter change
+                    # After optimizer.step(), calculate the change
+                    param_change_sum = 0
+                    param_count = 0
+                    for name, param in model.named_parameters():
+                        param_change = (param - prev_params[name]).abs().mean()
+                        param_change_sum += param_change.item()
+                        param_count += 1
+                    avg_param_change = param_change_sum / param_count
                     
-                # if running_batch % int(len(dataloaders[phase])/3)==int(len(dataloaders[phase])/3)-1:
-                #     # ...log a Matplotlib Figure showing the model's predictions on a
-                #     # random mini-batch
-                #     writer.add_figure(f'predictions vs. actuals {comment}',
-                #                     plot_classes_preds(model, inputs, img_paths, labels, identificator=phase),
-                #                     global_step=epoch * len(dataloaders[phase]) + running_batch)
-                #     writer.close()
+                    # Log the average parameter change
+                    writer.add_scalar('Average Parameter Change', avg_param_change, 
+                                      epoch * len(dataloaders[phase]) + running_batch)
                     
             if phase == 'train':
                 scheduler.step()
@@ -445,9 +462,11 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
 ####################### Test model #############
 
-def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader,
-                max_batch: int = 0, return_metrics: bool = True, comment: str ='', device = torch.device("cuda:0")):
-    '''
+def test_model(run_path, model: torchvision.models.resnet.ResNet, 
+               test_dataloader: DataLoader, max_batch: int = 0, 
+               return_metrics: bool = True, comment: str ='', 
+               device = torch.device("cuda:0"), writer: SummaryWriter = None):
+    """
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
 
@@ -463,7 +482,8 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         recall: MulticlassRecall(num_classes=3)
         accuracy: (TP+TN)/(TP+TN+FN+FP)
         fig_confusion_matrix: MulticlassConfusionMatrix(num_classes=3)
-    '''
+    """
+
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
     preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
@@ -480,14 +500,14 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         pred = pd.DataFrame({'shot': shot_numbers, 'prediction': y_hat.data, 
                             'label': batch['label'].data, 'time':batch['time'], 
                             'confidence': confidence,'L_logit': outputs[:,0].cpu(), 
-                            'H_logit': outputs[:,1].cpu(), 'ELM_logit': outputs[:,2].cpu()})
+                            'H_logit': outputs[:,1].cpu()})
 
         preds = pd.concat([preds, pred],axis=0, ignore_index=True)
 
         if max_batch!=0 and batch_index>max_batch:
             break
     if return_metrics:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values), dim=1)
+        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit', 'H_logit']].values), dim=1)
         
         # Confusion matrix
         confusion_matrix_metric = ConfusionMatrix(task="binary", num_classes=2)
@@ -502,15 +522,14 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         recall = BinaryRecall()(y_hat_df, y_df)
 
         # Precision-Recall curve
-        pr_roc_auc = binary_pr_roc_auc(y_df, softmax_out[:,1])
+        pr_roc_auc = pr_roc_auc(y_df, softmax_out[:,1], task='binary')
 
         # Accuracy
         accuracy = len(preds[preds['prediction'] == preds['label']]) / len(preds)
 
         
         textstr = '\n'.join((
-            f'Whole test dset',
-            r'threshhold = 0.5:',
+            r'for th == 0.5:',
             r'f1=%.2f' % (f1.item(), ),
             r'precision=%.2f' % (precision.item(), ),
             r'recall=%.2f' % (recall.item(), ),
@@ -537,6 +556,11 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         # Save the combined image
         combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
 
+        # Save the images to tensorboard
+        if writer:
+            combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
+            writer.add_image('metrics_for_whole_test_dset', combined_image_tensor)
+                
         return {'prediction_df': preds, 'confusion_matrix': (conf_matrix_fig, conf_matrix_ax), 'f1': f1,
                 'precision': precision, 'recall': recall, 'accuracy': accuracy,
                 'PR_ROC_AUC': pr_roc_auc}
@@ -545,7 +569,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
     
 
 
-def per_shot_test(path, shots: list, results_df: pd.DataFrame):
+def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWriter=None):
     '''
     Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
     Returns metrics of model for each shot separately
@@ -564,7 +588,7 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
 
     for shot in tqdm(shots):
         pred_for_shot = results_df[results_df['shot']==shot]
-        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
+        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit']].values), dim=1)
 
         y_hat_df = torch.tensor(pred_for_shot['prediction'].values.astype(float))
         y_df = torch.tensor(pred_for_shot['label'].values.astype(int))
@@ -595,15 +619,12 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
 
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
         conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
-        conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
 
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==1])*[1], 
                           s=2, alpha=1, label='H-mode Truth', color='maroon')
 
-        conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
-                          len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
-                          s=2, alpha=1, label='ELM Truth', color='royalblue')
+
 
         conf_time_ax.set_xlabel('t [ms]')
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
@@ -635,6 +656,11 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         
         # Save the combined image
         combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
+
+        # Save the images to tensorboard
+        if writer:
+            combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
+            writer.add_image(f'metrics_for_test_shot_{shot}', combined_image_tensor)
 
     return f'{path}/data'
 
@@ -670,52 +696,131 @@ def matplotlib_figure_to_pil_image(fig):
     return image
 
 
-def binary_pr_roc_auc(y_true, y_pred):
-    # Sort predictions and corresponding labels
-    sorted_indices = torch.argsort(y_pred, descending=True)
-    sorted_pred = y_pred[sorted_indices]
-    sorted_true = y_true[sorted_indices]
+def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
+    """
+    Calculate the PR (Precision-Recall) and ROC (Receiver Operating Characteristic) curves and AUC (Area Under the Curve)
+    for a binary and ternary classification problem.
 
-    # Calculate TP, FP, FN for each threshold
-    true_positives = torch.cumsum(sorted_true, dim=0)
-    false_positives = torch.cumsum(1 - sorted_true, dim=0)
-    total_positives = true_positives[-1]
-    total_negatives = false_positives[-1]
+    Args:
+        y_true (torch.Tensor): True labels of the binary classification problem.
+        y_pred (torch.Tensor): Predicted probabilities of the positive class.
 
-    # Precision and Recall calculations
-    precision = true_positives / (true_positives + false_positives)
-    recall = true_positives / total_positives
+    Returns:
+        dict: A dictionary containing the PR curve, ROC curve, PR AUC, and ROC AUC.
 
-    fpr = false_positives / total_negatives
-    tpr = true_positives / total_positives
+    """
+    def binary_pr_roc_auc(y_true, y_pred):
+        # Sort predictions and corresponding labels
+        sorted_indices = torch.argsort(y_pred, descending=True)
+        sorted_pred = y_pred[sorted_indices]
+        sorted_true = y_true[sorted_indices]
 
-    # Calculate AUC
-    auc_pr = calculate_auc(recall, precision)
-    auc_roc = calculate_auc(fpr, tpr)
+        # Calculate TP, FP, FN for each threshold
+        true_positives = torch.cumsum(sorted_true, dim=0)
+        false_positives = torch.cumsum(1 - sorted_true, dim=0)
+        total_positives = true_positives[-1]
+        total_negatives = false_positives[-1]
 
-    fig_pr, ax_pr = plt.subplots()
-    scatter_pr = ax_pr.scatter(recall, precision, c=sorted_pred, cmap='viridis', s=2)
-    ax_pr.set_xlabel('Recall')
-    ax_pr.set_ylabel('Precision')
-    ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
+        # Precision and Recall calculations
+        precision = true_positives / (true_positives + false_positives)
+        recall = true_positives / total_positives
+
+        fpr = false_positives / total_negatives
+        tpr = true_positives / total_positives
+
+        # Calculate AUC
+        auc_pr = calculate_auc(recall, precision)
+        auc_roc = calculate_auc(fpr, tpr)
+
+        return precision, recall, tpr, fpr, auc_roc, auc_pr, sorted_pred
+
+    if task == 'binary':
+        precision, recall, tpr, fpr, auc_roc, auc_pr, sorted_pred =  binary_pr_roc_auc(y_true, y_pred)
+
+        # Create the PR and ROC curves
+        fig_pr, ax_pr = plt.subplots()
+        scatter_pr = ax_pr.scatter(recall, precision, c=sorted_pred, cmap=cmap, s=2)
+        #ax_pr.set_xlim(0, 1)
+        #ax_pr.set_ylim(0, 1)
+        ax_pr.set_xlabel('Recall')
+        ax_pr.set_ylabel('Precision')
+        ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
+
+        fig_roc, ax_roc = plt.subplots()
+        scatter_roc = ax_roc.scatter(fpr, tpr, c=sorted_pred, cmap=cmap, s=2)
+        ax_roc.set_xlim(0, 1)
+        ax_roc.set_ylim(0, 1)
+        ax_roc.set_xlabel("False Positive Rate")
+        ax_roc.set_ylabel("True Positive Rate")
+        ax_roc.set_title(f'ROC AUC: {auc_roc:.4f}')
+
+        # Add colorbar
+        cbar_pr = fig_pr.colorbar(scatter_pr)
+        cbar_pr.set_label('Threshold')
+
+        cbar_roc = fig_roc.colorbar(scatter_roc)
+        cbar_roc.set_label('Threshold')
+
+        return {'pr_curve': (fig_pr, ax_pr), 'roc_curve': (fig_roc, ax_roc), 'pr_auc': auc_pr, 'roc_auc': auc_roc}
+
+    elif task == 'ternary':
+        cmaps = ['autumn', 'winter', 'cool']
+        # Create the PR and ROC curves for L-mode
+        L_precision, L_recall, L_tpr, L_fpr, L_auc_roc, L_auc_pr, L_sorted_pred =  binary_pr_roc_auc((y_true==0).long(), y_pred[:,0])
+        # Create the PR and ROC curves for H-mode
+        H_precision, H_recall, H_tpr, H_fpr, H_auc_roc, H_auc_pr, H_sorted_pred =  binary_pr_roc_auc((y_true==1).long(), y_pred[:,1])
+        # Create the PR and ROC curves for ELM
+        E_precision, E_recall, E_tpr, E_fpr, E_auc_roc, E_auc_pr, E_sorted_pred =  binary_pr_roc_auc((y_true==2).long(), y_pred[:,2])
+
+        # Create the PR image
+        fig_pr, ax_pr = plt.subplots(figsize=(10, 5))
+        scatter_pr_L = ax_pr.scatter(L_recall, L_precision, c=L_sorted_pred, cmap=cmaps[0], s=2)
+        scatter_pr_H = ax_pr.scatter(H_recall, H_precision, c=H_sorted_pred, cmap=cmaps[1], s=2)
+        scatter_pr_E = ax_pr.scatter(E_recall, E_precision, c=E_sorted_pred, cmap=cmaps[2], s=2)
+        #ax_pr.set_xlim(0, 1)
+        #ax_pr.set_ylim(0, 1)
+        ax_pr.set_xlabel('Recall')
+        ax_pr.set_ylabel('Precision')
+        ax_pr.set_title(f'PR AUC L-mode: {L_auc_pr:.4f}, H-mode: {H_auc_pr:.4f}, ELM: {E_auc_pr:.4f}')
+        cbar_pr = [fig_pr.colorbar(scatter_pr_L), fig_pr.colorbar(scatter_pr_H), fig_pr.colorbar(scatter_pr_E)]
+        cbar_pr[0].set_label('Threshold for L-mode')
+        cbar_pr[1].set_label('Threshold for H-mode')
+        cbar_pr[2].set_label('Threshold for ELM')
+        cbar_pr[1].set_ticks([])
+        cbar_pr[2].set_ticks([])
+        # Adjust positions of colorbars in order to avoid uselessly large white space
+        for i, cb in enumerate(cbar_pr):
+            pos = cb.ax.get_position()
+            cb.ax.set_position([0.68 - i*0.05, pos.y0, 0.02, pos.height])
+
+        #Create the ROC image
+        fig_roc, ax_roc = plt.subplots(figsize=(10, 5))
+        scatter_roc_L = ax_roc.scatter(L_tpr, L_fpr, c=L_sorted_pred, cmap=cmaps[0], s=2)
+        scatter_roc_H = ax_roc.scatter(H_tpr, H_fpr, c=H_sorted_pred, cmap=cmaps[1], s=2)
+        scatter_roc_E = ax_roc.scatter(E_tpr, E_fpr, c=E_sorted_pred, cmap=cmaps[2], s=2)
+        ax_roc.set_xlim(0, 1)
+        ax_roc.set_ylim(0, 1)
+        ax_roc.set_xlabel("False Positive Rate")
+        ax_roc.set_ylabel("True Positive Rate")
+        ax_roc.set_title(f'ROC AUC L-mode: {L_auc_roc:.4f}, H-mode: {H_auc_roc:.4f}, ELM: {E_auc_roc:.4f}')
+        cbar_roc = [fig_roc.colorbar(scatter_roc_L), fig_roc.colorbar(scatter_roc_H), fig_roc.colorbar(scatter_roc_E)]
+        cbar_roc[0].set_label('Threshold for L-mode')
+        cbar_roc[1].set_label('Threshold for H-mode') 
+        cbar_roc[2].set_label('Threshold for ELM')
+        cbar_roc[1].set_ticks([])
+        cbar_roc[2].set_ticks([])
+        # Adjust positions of colorbars in order to avoid uselessly large white space
+        for i, cb in enumerate(cbar_roc):
+            pos = cb.ax.get_position()
+            cb.ax.set_position([0.68 - i*0.05, pos.y0, 0.02, pos.height])
+
+        return {'pr_curve': (fig_pr, ax_pr), 'roc_curve': (fig_roc, ax_roc), 'pr_auc': [L_auc_pr, H_auc_pr, E_auc_pr], 'roc_auc': [L_auc_roc, H_auc_roc, E_auc_roc]}
     
+    else:
+        raise Exception("Task should be either 'binary' or 'ternary'")
 
-    fig_roc, ax_roc = plt.subplots()
-    scatter_roc = ax_roc.scatter(fpr, tpr, c=sorted_pred, cmap='viridis', s=2)
-    ax_roc.set_xlabel("False Positive Rate")
-    ax_roc.set_ylabel("True Positive Rate")
-    ax_roc.set_title(f'ROC AUC: {auc_roc:.4f}')
+        
 
-
-    # Add colorbar
-    cbar_pr = fig_pr.colorbar(scatter_pr)
-    cbar_pr.set_label('Threshold')
-
-    cbar_roc = fig_roc.colorbar(scatter_roc)
-    cbar_roc.set_label('Threshold')
-
-    return {'pr_curve': [fig_pr, ax_pr], 'roc_curve': [fig_roc, ax_roc],
-            'roc_auc': auc_roc, 'pr_auc': auc_pr}
 
 
 def calculate_auc(x, y):

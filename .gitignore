@@ -2,7 +2,7 @@
 /vyzkumny_ukol/ConfusionMatrix 3 epochs of training 26_11_2023.svg
 /vyzkumny_ukol/preds_vs_actuals
 vyzkumny_ukol/process new imgs.ipynb
-vyzkumny_ukol/LHmode_classifier.py
+
 /gamma_spice_sim
 /data 
 /saved_models
@@ -11,7 +11,8 @@ vyzkumny_ukol/LHmode_classifier.py
 /old_runs
 vyzkumny_ukol/old_runs
 /spice
-*.ckpt
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

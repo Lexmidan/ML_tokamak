@@ -1,32 +1,27 @@
-import torch
-import torch.nn as nn
 import os
-from pathlib import Path
-import numpy as np
+import time 
 from PIL import Image
+
+import numpy as np
+
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-import re
-import seaborn as sns
 import torch
 import torch.nn.functional as F
 import pandas as pd
 import torchvision
 from tqdm.notebook import tqdm
-import pytorch_lightning as pl
-import confinement_mode_classifier as cmc
-from torchvision.io import read_image
-from torch.utils.data import DataLoader, Dataset, random_split, WeightedRandomSampler
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
 from torch.optim import lr_scheduler
 import torch.nn as nn
-import copy
-from tempfile import TemporaryDirectory
+import torch
 from torch.utils.tensorboard import SummaryWriter
-import time 
-from datetime import datetime
-device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
+import confinement_mode_classifier as cmc
+
+################################## Stolen from https://github.com/TheMrGhostman/InceptionTime-Pytorch/##################################
 def correct_sizes(sizes):
 	corrected_sizes = [s if s % 2 != 0 else s - 1 for s in sizes]
 	return corrected_sizes
@@ -304,7 +299,23 @@ class InceptionTransposeBlock(nn.Module):
 			Z = Z + self.residual(X)
 			Z = self.activation(Z)
 		return Z
-	
+      
+class Flatten(nn.Module):
+	def __init__(self, out_features):
+		super(Flatten, self).__init__()
+		self.output_dim = out_features
+
+	def forward(self, x):
+		return x.view(-1, self.output_dim)
+    
+class Reshape(nn.Module):
+	def __init__(self, out_shape):
+		super(Reshape, self).__init__()
+		self.out_shape = out_shape
+
+	def forward(self, x):
+		return x.view(-1, *self.out_shape)
+##############################################################################	
 
 class RobustScalerNumpy:
     def __init__(self):
@@ -406,7 +417,7 @@ class SignalDataset(Dataset):
 def get_dloader(df: pd.DataFrame(), batch_size: int = 32, 
                 balance_data: bool = True, shuffle: bool = False,
                 signal_window: int = 160, signal_name: str = 'divlp',
-                num_workers: int = 8, persistent_workers: bool = False):
+                num_workers: int = 8, persistent_workers: bool = True):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -471,7 +482,7 @@ class Simple1DCNN(nn.Module):
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
                  writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
-                 chkpt_path=os.getcwd(), signal_name='divlp'):
+                 chkpt_path=os.getcwd(), signal_name='divlp', device = torch.device("cuda:0")):
     since = time.time()
 
 
@@ -576,8 +587,11 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     print(f'Best val Acc: {best_acc:4f}')
     return model
 
-def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloader: DataLoader,
-                max_batch: int = 0, return_metrics: bool = True, comment: str ='', signal_name: str = 'divlp'):
+def test_model(run_path, 
+               model, test_dataloader: DataLoader,
+               max_batch: int = 0, return_metrics: bool = True, 
+               comment: str ='', signal_name: str = 'divlp', writer: SummaryWriter = None,
+               device = torch.device("cuda:0")):
     '''
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
@@ -618,26 +632,26 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
             break
 
     if return_metrics:
+        print('Processing metrics...')
         softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
         conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
+        
         #F1
         f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
 
         #Precision
         precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
         recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
-        #precision(logits_df, y_df.int())
-         #Precision_recall curve
-        pr_curve = MulticlassPrecisionRecallCurve(num_classes=3, thresholds=64)
-        pr_curve.update(softmax_out, y_df)
-        pr_curve_fig, pr_curve_ax = pr_curve.plot(score=True)
-        #ROC metric
-        mcroc = MulticlassROC(num_classes=3, thresholds=64)
-        mcroc.update(torch.tensor(preds[['L_logit', 'H_logit', 'ELM_logit']].values.astype(float)), y_df)
-        roc_fig, roc_ax = mcroc.plot(score=True)
+
+        #Precision_recall and ROC curves are generated using the pr_roc_auc()
+        pr_roc = cmc.pr_roc_auc(y_df, softmax_out, task='ternary')
+        pr_fig = pr_roc['pr_curve'][0]
+        roc_fig = pr_roc['roc_curve'][0]
+        roc_ax = pr_roc['roc_curve'][1]
+
         #Accuracy
         accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
 
@@ -652,35 +666,36 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet, test_dataloade
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
-        pr_curve_ax.set_title(f'pr_curve for whole test dset')
-        pr_curve_ax.set_xlabel('Precision')
-        pr_curve_ax.set_ylabel('Recall')
         roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
-        roc_ax.set_xlabel('FP Rate')
-        roc_ax.set_ylabel('TP Rate')
-
 
         # Open the saved images using Pillow
         roc_img = cmc.matplotlib_figure_to_pil_image(roc_fig)
+        pr_img = cmc.matplotlib_figure_to_pil_image(pr_fig)
         conf_matrix_img = cmc.matplotlib_figure_to_pil_image(conf_matrix_fig)
-        pr_curve_img = cmc.matplotlib_figure_to_pil_image(pr_curve_fig)
-        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_curve_img.width + roc_img.width,\
+        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_img.width + roc_img.width,\
                                             conf_matrix_img.height))
 
         # Paste the saved images into the combined image
         combined_image.paste(conf_matrix_img, (0, 0))
         combined_image.paste(roc_img, (conf_matrix_img.width, 0))
-        combined_image.paste(pr_curve_img, (roc_img.width+conf_matrix_img.width, 0))
+        combined_image.paste(pr_img, (roc_img.width+conf_matrix_img.width, 0))
         
         # Save the combined image
         combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
 
-        return preds, (conf_matrix_fig, conf_matrix_ax), f1, precision, recall, accuracy, (pr_curve_fig, pr_curve_ax), (roc_fig, roc_ax)
-    else: 
-        return preds
+        # Save the images to tensorboard
+        if writer:
+            combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
+            writer.add_image('metrics_for_whole_test_dset', combined_image_tensor)
+
+        return {'prediction_df': preds, 'confusion_matrix': (conf_matrix_fig, conf_matrix_ax), 'f1': f1,
+                'precision': precision, 'recall': recall, 'accuracy': accuracy, 'pr_roc_curves': pr_roc}
+                
+    else:
+        return {'prediction_df': preds}
     
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-def per_shot_test(path, shots: list, results_df: pd.DataFrame):
+
+def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWriter = None):
     '''
     Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
     Returns metrics of model for each shot separately
@@ -768,6 +783,11 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame):
         # Save the combined image
         combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
 
+                # Save the images to tensorboard
+        if writer:
+            combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
+            writer.add_image(f'metrics_for_test_shot_{shot}', combined_image_tensor)
+
     return f'{path}/data'
 
 
@@ -802,3 +822,36 @@ def matplotlib_figure_to_pil_image(fig):
 
     return image
 
+def select_model_architecture(architecture: str, num_classes: int, window: int):
+
+    if architecture == 'InceptionTime':
+        model = nn.Sequential(
+                    Reshape(out_shape=(1, window)),
+                    InceptionBlock(
+                        in_channels=1, 
+                        n_filters=32, 
+                        kernel_sizes=[5, 11, 23],
+                        bottleneck_channels=32,
+                        use_residual=True,
+                        activation=nn.ReLU()
+                    ),
+                    InceptionBlock(
+                        in_channels=32*4, 
+                        n_filters=32, 
+                        kernel_sizes=[5, 11, 23],
+                        bottleneck_channels=32,
+                        use_residual=True,
+                        activation=nn.ReLU()
+                    ),
+                    nn.AdaptiveAvgPool1d(output_size=1),
+                    Flatten(out_features=32*4*1),
+                    nn.Linear(in_features=4*32*1, out_features=num_classes)
+        )
+
+
+    elif architecture == 'Simple1DCNN':
+        model = Simple1DCNN(num_classes=num_classes, window=window)
+
+    else:
+        raise ValueError(f'{architecture} is not a valid architecture. Please use one of the following: InceptionTime, Simple1DCNN')
+    return model
