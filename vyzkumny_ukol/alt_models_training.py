@@ -32,7 +32,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     pl.seed_everything(random_seed)
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     path = Path(os.getcwd())
-    comment_for_model_name = architecture + '_on_' + signal_name  + str(signal_window) +'dpoints ' + comment_for_model_name
+    comment_for_model_name = architecture + '_on_' + signal_name  + str(signal_window) +' dpoints ' + comment_for_model_name
     
     # Load data
     shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
@@ -41,7 +41,9 @@ def train_and_test_alt_model(signal_name = 'divlp',
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
 
-    shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_testing, shots_for_validation, use_ELMS=True)
+    shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_testing, 
+                                                     shots_for_validation, use_ELMS=True, 
+                                                     signal_name=signal_name)
 
 
     # Create dataloaders
@@ -81,9 +83,9 @@ def train_and_test_alt_model(signal_name = 'divlp',
 
     criterion = nn.CrossEntropyLoss()
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.Adam(untrained_model.parameters(), lr=learning_rate_min)
+    optimizer = torch.optim.AdamW(untrained_model.parameters(), lr=learning_rate_min, weight_decay=0.01)
 
-    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=50) #!!!
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs) #!!!
 
     # Train model
     model = am.train_model(untrained_model, criterion, optimizer, exp_lr_scheduler, 
@@ -96,17 +98,19 @@ def train_and_test_alt_model(signal_name = 'divlp',
     # Test model
     metrics = am.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
 
-    am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics[0], writer=writer)
+    am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
 
 
 if __name__ == "__main__":
-    train_and_test_alt_model(signal_name = 'divlp',
+    train_and_test_alt_model(signal_name = 'mc',
                             architecture = 'InceptionTime',
                             signal_window = 320,
                             batch_size = 512,
-                            num_workers = 8,
+                            num_workers = 32,
                             num_epochs = 12,
                             learning_rate_min = 0.001,
                             learning_rate_max = 0.01,
                             comment_for_model_name = '3 classes')
+    
+
     print('Done')

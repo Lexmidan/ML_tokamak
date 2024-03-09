@@ -352,6 +352,9 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     since = time.time()
     best_acc = 0.0
 
+    total_loss = {'train': 0.0, 'val': 0.0}
+    total_batch = {'train': 0, 'val': 0}
+
     for epoch in range(num_epochs):
         print(f'Epoch {epoch+1}/{num_epochs}')
         print('-' * 10)
@@ -365,7 +368,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
             running_loss = 0.0
             running_corrects = 0
-            num_of_samples = 0
             running_batch = 0
 
             # Save parameters before changing them. We will use this to calculate the average parameter change
@@ -395,9 +397,14 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         loss.backward()   
                         optimizer.step()
 
+                        total_batch['train'] += 1
+                        total_loss['train'] += loss.item()
+                    else:
+                        total_batch['val'] += 1
+                        total_loss['val'] += loss.item()
+
                 # statistics
-                running_loss += loss.item() * inputs.size(0)
-                num_of_samples += inputs.size(0)
+                running_loss += loss.item() * inputs.size(0) #Why multiply by inputs.size(0)?
                 running_corrects += torch.sum(preds == labels.data) #How many correct answers
                 
                 
@@ -406,8 +413,8 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     # ...log the running loss
                     
                     #Training/validation loss
-                    writer.add_scalar(f'{phase}ing loss', loss,
-                                    epoch * len(dataloaders[phase]) + running_batch)
+                    writer.add_scalar(f'{phase}ing loss', total_loss[phase] / total_batch[phase],
+                                    total_batch[phase])
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
@@ -777,10 +784,10 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
         scatter_pr_L = ax_pr.scatter(L_recall, L_precision, c=L_sorted_pred, cmap=cmaps[0], s=2)
         scatter_pr_H = ax_pr.scatter(H_recall, H_precision, c=H_sorted_pred, cmap=cmaps[1], s=2)
         scatter_pr_E = ax_pr.scatter(E_recall, E_precision, c=E_sorted_pred, cmap=cmaps[2], s=2)
-        #ax_pr.set_xlim(0, 1)
-        #ax_pr.set_ylim(0, 1)
-        ax_pr.set_xlabel('Recall')
-        ax_pr.set_ylabel('Precision')
+        ax_pr.set_xlim(-0.07, 1.07)
+        ax_pr.set_ylim(-0.07, 1.07)
+        ax_pr.set_xlabel('Recall', fontsize=16)
+        ax_pr.set_ylabel('Precision', fontsize=16)
         ax_pr.set_title(f'PR AUC L-mode: {L_auc_pr:.4f}, H-mode: {H_auc_pr:.4f}, ELM: {E_auc_pr:.4f}')
         cbar_pr = [fig_pr.colorbar(scatter_pr_L), fig_pr.colorbar(scatter_pr_H), fig_pr.colorbar(scatter_pr_E)]
         cbar_pr[0].set_label('Threshold for L-mode')
@@ -795,13 +802,13 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
 
         #Create the ROC image
         fig_roc, ax_roc = plt.subplots(figsize=(10, 5))
-        scatter_roc_L = ax_roc.scatter(L_tpr, L_fpr, c=L_sorted_pred, cmap=cmaps[0], s=2)
-        scatter_roc_H = ax_roc.scatter(H_tpr, H_fpr, c=H_sorted_pred, cmap=cmaps[1], s=2)
-        scatter_roc_E = ax_roc.scatter(E_tpr, E_fpr, c=E_sorted_pred, cmap=cmaps[2], s=2)
-        ax_roc.set_xlim(0, 1)
-        ax_roc.set_ylim(0, 1)
-        ax_roc.set_xlabel("False Positive Rate")
-        ax_roc.set_ylabel("True Positive Rate")
+        scatter_roc_L = ax_roc.scatter(L_fpr, L_tpr, c=L_sorted_pred, cmap=cmaps[0], s=2)
+        scatter_roc_H = ax_roc.scatter(H_fpr, H_tpr, c=H_sorted_pred, cmap=cmaps[1], s=2)
+        scatter_roc_E = ax_roc.scatter(E_fpr, E_tpr, c=E_sorted_pred, cmap=cmaps[2], s=2)
+        ax_roc.set_xlim(-0.07, 1.07)
+        ax_roc.set_ylim(-0.07, 1.07)
+        ax_roc.set_xlabel("False Positive Rate", fontsize=16)
+        ax_roc.set_ylabel("True Positive Rate", fontsize=16)
         ax_roc.set_title(f'ROC AUC L-mode: {L_auc_roc:.4f}, H-mode: {H_auc_roc:.4f}, ELM: {E_auc_roc:.4f}')
         cbar_roc = [fig_roc.colorbar(scatter_roc_L), fig_roc.colorbar(scatter_roc_H), fig_roc.colorbar(scatter_roc_E)]
         cbar_roc[0].set_label('Threshold for L-mode')

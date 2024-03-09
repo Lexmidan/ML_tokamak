@@ -8,6 +8,6 @@ def change_permissions(folder_path):
             os.chmod(file_path, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
 
 if __name__ == "__main__":
-    folder_path = "/compass/Shared/Users/bogdanov/gamma_spice_sim"
+    folder_path = "/compass/Shared/Users/bogdanov/vyzkumny_ukol"
     change_permissions(folder_path)
     print("Permissions changed for all files in the folder.")

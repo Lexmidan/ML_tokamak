@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 import pandas as pd
 import torchvision
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
 from torch.optim import lr_scheduler
@@ -351,17 +351,29 @@ class RobustScalerNumpy:
         return self.transform(X)
 
 
-def split_df(df, shots, shots_for_testing, shots_for_validation, use_ELMS=True, path=os.getcwd()):
+def split_df(df, shots, shots_for_testing, shots_for_validation, signal_name, use_ELMS=True, path=os.getcwd()):
+
+    """
+    Splits the dataframe into train, test and validation sets. 
+    ALSO SCALES THE DATA
+    """
+    signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal', 
+                         'mc': f'{path}/data/mirnov_coil_signal', 
+                         'divlp': f'{path}/data/langmuir_probe_signal'}
+    
+    if signal_name not in ['divlp', 'mc', 'h_alpha']:
+            raise ValueError(f'{signal_name} is not a valid signal name. Please use one of the following: divlp, mc, h_alpha')
+        
     shot_df = pd.DataFrame([])
 
     for shot in shots:
-        df = pd.read_csv(f'{path}/data/LP_MC_H_alpha/LP_MC_H_alpha_shot_{shot}.csv')
+        df = pd.read_csv(f'{signal_paths_dict[signal_name]}/shot_{shot}.csv')
         df['shot'] = shot
         shot_df = pd.concat([shot_df, df], axis=0)
 
     #Scale the data
     scaler = RobustScalerNumpy().fit_transform
-    scaled_df = pd.DataFrame(scaler(shot_df[['mc', 'divlp', 'h_alpha']]), 
+    scaled_df = pd.DataFrame(scaler(shot_df[signal_name]), 
                              columns=shot_df.columns)
     scaled_df['shot'] = shot_df['shot']
     scaled_df['mode'] = shot_df['mode']
@@ -375,6 +387,8 @@ def split_df(df, shots, shots_for_testing, shots_for_validation, use_ELMS=True, 
     scaled_df['mode'] = df_mode
     scaled_df = scaled_df.reset_index(drop=True) #each shot has its own indexing
 
+    if signal_name == 'h_alpha':
+         scaled_df['h_alpha']*=-1
 
     test_df = scaled_df[scaled_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = scaled_df[scaled_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
@@ -402,10 +416,15 @@ class SignalDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
+
         signal_window = torch.tensor([])
-        
-        if idx-self.window < 0: 
-            signal_window = torch.tensor(self.window*[self.df.iloc[idx][f'{self.signal_name}']])
+
+        if idx < self.window: 
+            if idx == 0: #This "if" is needed because  self.df.iloc[0:0][f'{self.signal_name}'] is a scalar => signal_window[0] will fail
+                signal_window = torch.full((self.window,), self.df.iloc[0][f'{self.signal_name}'])
+            else:
+                signal_window = torch.tensor(self.df.iloc[0:idx][f'{self.signal_name}'].to_numpy())
+                signal_window = torch.cat([torch.full((self.window-idx,), signal_window[0]), signal_window])
         else:
             signal_window = torch.tensor(self.df.iloc[idx-self.window:idx][f'{self.signal_name}'].to_numpy())
 
@@ -462,7 +481,7 @@ class Simple1DCNN(nn.Module):
         self.conv2 = nn.Conv1d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1, dilation=2)
         self.batch_norm1 = nn.BatchNorm1d(32)
         # Define a fully connected layer for classification
-        ### in_features = floor[((input_length + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1]
+        ### in_features = floor(((input_length + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1)
         self.fc = nn.Linear(in_features=32 * (window - 2), out_features=num_classes)
 
     def forward(self, x):
@@ -489,6 +508,9 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     torch.save(model.state_dict(), chkpt_path)
     best_acc = 0.0
 
+    total_loss = {'train': 0.0, 'val': 0.0}
+    total_batch = {'train': 0, 'val': 0}
+
     for epoch in range(num_epochs):
         print(f'Epoch {epoch+1}/{num_epochs}')
         print('-' * 10)
@@ -502,7 +524,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
             running_loss = 0.0
             running_corrects = 0
-            num_of_samples = 0
             running_batch = 0
             # Iterate over data.
             #TODO: eliminate the need in that dummy iterative for tensorboard part
@@ -529,9 +550,14 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         loss.backward()
                         optimizer.step()
 
+                        total_batch['train'] += 1
+                        total_loss['train'] += loss.item()
+                    else:
+                        total_batch['val'] += 1
+                        total_loss['val'] += loss.item()                        
+
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
-                num_of_samples += inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data) #How many correct answers
                 
                 
@@ -541,9 +567,8 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     # ...log the running loss
                     
                     #Training/validation loss
-                    writer.add_scalar(f'{phase}ing loss',
-                                    loss,
-                                    epoch * len(dataloaders[phase]) + running_batch)
+                    writer.add_scalar(f'{phase}ing loss', total_loss[phase] / total_batch[phase],
+                                    total_batch[phase])
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
@@ -567,19 +592,14 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
             print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
 
-            # deep copy the model
             if phase == 'val':
-                writer.add_scalar(f'accuracy',
-                                    epoch_acc,
-                                    epoch)
+                writer.add_scalar(f'accuracy', epoch_acc, epoch)
                 writer.close()
                 if epoch_acc > best_acc:
                     best_acc = epoch_acc
                 torch.save(model.state_dict(), chkpt_path)
 
-
         time_elapsed = time.time() - since
-
 
         # load best model weights
         model.load_state_dict(torch.load(chkpt_path))
@@ -633,7 +653,9 @@ def test_model(run_path,
 
     if return_metrics:
         print('Processing metrics...')
+
         softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
+
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(y_hat_df, y_df)
@@ -642,7 +664,7 @@ def test_model(run_path,
         #F1
         f1 = F1Score(task="multiclass", num_classes=3)(y_hat_df, y_df)
 
-        #Precision
+        #Precision and recall
         precision = MulticlassPrecision(num_classes=3)(y_hat_df, y_df)
         recall = MulticlassRecall(num_classes=3)(y_hat_df, y_df)
 
@@ -670,10 +692,18 @@ def test_model(run_path,
 
         # Open the saved images using Pillow
         roc_img = cmc.matplotlib_figure_to_pil_image(roc_fig)
+        roc_img = roc_img.crop([int(0.06*roc_img.width), 0, int(0.8*roc_img.width), roc_img.height])
         pr_img = cmc.matplotlib_figure_to_pil_image(pr_fig)
+        pr_img = pr_img.crop([int(0.06*pr_img.width), 0, int(0.8*pr_img.width), pr_img.height])
         conf_matrix_img = cmc.matplotlib_figure_to_pil_image(conf_matrix_fig)
+        
+        # Resize the images to have the same height
+        new_conf_width = int(conf_matrix_img.width/conf_matrix_img.height * pr_img.height)
+        conf_matrix_img = conf_matrix_img.resize((new_conf_width, pr_img.height))
+
+        # Create a new image with a white background
         combined_image = Image.new('RGB', (conf_matrix_img.width + pr_img.width + roc_img.width,\
-                                            conf_matrix_img.height))
+                                            roc_img.height))
 
         # Paste the saved images into the combined image
         combined_image.paste(conf_matrix_img, (0, 0))
@@ -822,7 +852,22 @@ def matplotlib_figure_to_pil_image(fig):
 
     return image
 
+
 def select_model_architecture(architecture: str, num_classes: int, window: int):
+    """
+    Selects and returns a model architecture based on the specified architecture name.
+
+    Args:
+        architecture (str): The name of the architecture to select. Valid options are 'InceptionTime' and 'Simple1DCNN'.
+        num_classes (int): The number of output classes for the model.
+        window (int): The size of the input window of given signal.
+
+    Returns:
+        torch.nn.Module: The selected model architecture.
+
+    Raises:
+        ValueError: If the specified architecture name is not valid.
+    """
 
     if architecture == 'InceptionTime':
         model = nn.Sequential(
