@@ -2,7 +2,7 @@
 /vyzkumny_ukol/ConfusionMatrix 3 epochs of training 26_11_2023.svg
 /vyzkumny_ukol/preds_vs_actuals
 vyzkumny_ukol/process new imgs.ipynb
-vyzkumny_ukol/sandbox.ipynb
+*.ipynb
 /gamma_spice_sim
 /data 
 /saved_models
