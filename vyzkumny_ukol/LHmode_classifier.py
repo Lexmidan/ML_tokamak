@@ -26,7 +26,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             learning_rate_min = 0.001,
                             learning_rate_max = 0.01,
                             comment_for_model_name = f', 2 output classes',
-                            random_seed = 42):
+                            random_seed = 42,
+                            augmentation = True):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -45,22 +46,23 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     shot_numbers = shot_for_ris['shot']
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
+    shots_for_training = shot_for_ris[shot_for_ris['used_as'] == 'train']['shot']
 
-    shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=False)
+    shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
+                                                                    shots_for_validation, use_ELMS=False, ris_option=ris_option)
 
 
-    test_dataloader = cmc.get_dloader(test_df, path, batch_size, 
-                                        ris_option=ris_option, balance_data=False, 
-                                        shuffle=False, num_workers=num_workers)
+    test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
+                                      shuffle=False, num_workers=num_workers, 
+                                      augmentation=False)
 
-    val_dataloader = cmc.get_dloader(val_df, path, batch_size, 
-                                        ris_option=ris_option, balance_data=True, 
-                                        shuffle=False, num_workers=num_workers)
+    val_dataloader = cmc.get_dloader(val_df, path, batch_size, balance_data=True, 
+                                     shuffle=False, num_workers=num_workers, 
+                                     augmentation=False)
 
-    train_dataloader = cmc.get_dloader(train_df, path, batch_size, 
-                                        ris_option=ris_option, balance_data=True, 
-                                        shuffle=False, num_workers=num_workers)
+    train_dataloader = cmc.get_dloader(train_df, path, batch_size, balance_data=True, 
+                                       shuffle=False, num_workers=num_workers, 
+                                       augmentation=augmentation)
 
     dataloaders = {'train':train_dataloader, 'val':val_dataloader}
     dataset_sizes = {x: len(dataloaders[x].dataset) for x in ['train', 'val']}
@@ -81,16 +83,17 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
     # Let's visualize the model
     sample_input = next(iter(train_dataloader))['img']
+    print('Adding graph to tensorboard')
     writer.add_graph(pretrained_model, sample_input.float().to(device))
 
     # Loss function
     criterion = nn.CrossEntropyLoss()
 
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.Adam(pretrained_model.parameters(), lr=learning_rate_min)
+    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=50) #!!!
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_fc) #!!!
 
     # Model will be saved to this folder along with metrics and tensorboard scalars
     model_path = Path(f'{path}/runs/{timestamp}_last_fc/model.pt')
@@ -100,43 +103,89 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs_for_fc, 
                         chkpt_path=model_path.with_name(f'{model_path.stem}_chkpt{model_path.suffix}'))
 
+    hyperparameters = {
+    'batch_size': batch_size,
+    'num_epochs': num_epochs_for_fc,
+    'optimizer': optimizer.__class__.__name__,
+    'criterion': criterion.__class__.__name__,
+    'learning_rate_max': learning_rate_max,
+    'scheduler': exp_lr_scheduler.__class__.__name__,
+    'shots_for_testing': torch.tensor(shots_for_testing.values.tolist()),
+    'shots_for_validation': torch.tensor(shots_for_validation.values.tolist()),
+    'shots_for_training': torch.tensor(shots_for_training.values.tolist()),
+    'ris_option': ris_option,
+    'num_classes': num_classes,
+    'second_image': 'None',
+    'augmentation': "applied" if augmentation else "no augmentation",
+    'random_seed': random_seed
+    }
+    
+    
     torch.save(model.state_dict(), model_path)
 
     #### Test the model############################################
     metrics = cmc.test_model(f'runs/{timestamp}_last_fc', model, test_dataloader, comment='', writer=writer)
 
-    shots_for_testing = shots_for_testing.values.tolist()
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
-                                shots=shots_for_testing, results_df=metrics['prediction_df'], writer=writer)
-    writer.add_scalar(f'Accuracy on test_dataset', metrics['accuracy'])
-    writer.add_scalar(f'F1 metric on test_dataset', metrics['f1'])
-    writer.add_scalar(f'Precision on test_dataset', metrics['precision'])
-    writer.add_scalar(f'Recall on test_dataset', metrics['recall'])
+                                shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
+
+    writer.add_hparams(hyperparameters, {'Accuracy on test_dataset': metrics['accuracy'], 
+                                         'F1 metric on test_dataset':metrics['f1'], 
+                                         'Precision on test_dataset':metrics['precision'], 
+                                         'Recall on test_dataset':metrics['recall']})
     writer.close()
 
 
+
     #### Train the whole model######################################
+    # Loss function
+    criterion = nn.CrossEntropyLoss()
+
+    # Observe that all parameters are being optimized
+    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min)
+
+    # Decay LR by a factor of 0.1 every 7 epochs
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_all_layers) #!!!
+
     writer = SummaryWriter(f'runs/{timestamp}_all_layers')
     for param in model.parameters():
         param.requires_grad = True
 
     model_path = Path(f'{path}/runs/{timestamp}_all_layers/model.pt')
 
-
-
     model = cmc.train_model(model, criterion, optimizer, exp_lr_scheduler, 
                             dataloaders, writer, dataset_sizes, num_epochs=num_epochs_for_all_layers,
                             chkpt_path=model_path.with_name(f'{model_path.stem}_chkpt{model_path.suffix}'))
+    
     torch.save(model.state_dict(), model_path)
+
+    hyperparameters = {
+    'batch_size': batch_size,
+    'num_epochs': num_epochs_for_all_layers,
+    'optimizer': optimizer.__class__.__name__,
+    'criterion': criterion.__class__.__name__,
+    'learning_rate_max': learning_rate_max,
+    'scheduler': exp_lr_scheduler.__class__.__name__,
+    'shots_for_testing': torch.tensor(shots_for_testing.values.tolist()),
+    'shots_for_validation': torch.tensor(shots_for_validation.values.tolist()),
+    'shots_for_training': torch.tensor(shots_for_training.values.tolist()),
+    'ris_option': ris_option,
+    'num_classes': num_classes,
+    'second_image': 'None',
+    'augmentation': "applied" if augmentation else "no augmentation",
+    'random_seed': random_seed
+    }
 
     #### Test the model############################################
     metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader, comment='', writer=writer)
+
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
-                                shots=shots_for_testing, results_df=metrics['prediction_df'], writer=writer)
-    writer.add_scalar(f'Accuracy on test_dataset', metrics['accuracy'])
-    writer.add_scalar(f'F1 metric on test_dataset', metrics['f1'])
-    writer.add_scalar(f'Precision on test_dataset', metrics['precision'])
-    writer.add_scalar(f'Recall on test_dataset', metrics['recall'])
+                                shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
+    
+    writer.add_hparams(hyperparameters, {'Accuracy on test_dataset': metrics['accuracy'], 
+                                         'F1 metric on test_dataset':metrics['f1'], 
+                                         'Precision on test_dataset':metrics['precision'], 
+                                         'Recall on test_dataset':metrics['recall']})
     writer.close()
 
     return model, model_path

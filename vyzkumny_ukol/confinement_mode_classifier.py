@@ -10,6 +10,7 @@ import pandas as pd
 import torchvision
 from tqdm import tqdm
 import pytorch_lightning as pl
+from torchvision import transforms
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
@@ -42,23 +43,34 @@ std = np.array([0.229, 0.224, 0.225])
 
 
 class ImageDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std):
+    def __init__(self, annotations, img_dir, mean, std, augmentation = False):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
-
+        if augmentation:
+            self.transformations = transforms.Compose([
+            transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),  # Example for additional augmentation
+            transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
+            AddRandomNoise(0., 0.05),  # Add random noise
+            ])
+        else:
+            self.transformations = transforms.Lambda(lambda x: x) #Identity transformation
 
     def __len__(self):
         return len(self.img_labels)
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
+        #load image
         image = read_image(img_path).float()
-        normalized_image = (image - self.mean[:, None, None])/(255 * self.std[:, None, None])
+        #Normalize and then augment the image
+        augmented_image = self.transformations((image - self.mean[:, None, None])/(255 * self.std[:, None, None]))
+        #Get label and time
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
-        return {'img': normalized_image,'label': label, 'path': img_path, 'time': time}
+        return {'img': augmented_image,'label': label, 'path': img_path, 'time': time}
 
 
 class HalphaDataset(Dataset):
@@ -92,14 +104,21 @@ class HalphaDataset(Dataset):
 
 
 class TwoImagesDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std, second_img_opt: str = 'RIS2', h_alpha_window = 0):
+    def __init__(self, annotations, img_dir, mean, std, second_img_opt: str = 'RIS2', augmentation = False):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
         self.std = std
         self.option = second_img_opt
-        self.h_alpha_window = h_alpha_window
-
+        if augmentation:
+            self.transformations = transforms.Compose([
+            transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
+            AddRandomNoise(0., 0.05),  # Add random noise
+            ])
+        else:
+            self.transformations = transforms.Lambda(lambda x: x) #Identity transformation
     def __len__(self):
         return len(self.img_labels)
 
@@ -109,8 +128,9 @@ class TwoImagesDataset(Dataset):
         normalized_first_image = (first_image/255 - self.mean[:, None, None])/(self.std[:, None, None])
         
         #Dealing second image
-        if self.option == 'RIS2':
+        if self.option == 'RIS2': 
             second_img_path = first_img_path.replace('RIS1', 'RIS2')
+        # Then we have a second image from the same RIS, but taken at previous time
         elif  idx-1 < 0: #If previous img doesn't exist, use the same image twice
             second_img_path = first_img_path
         else:
@@ -118,19 +138,12 @@ class TwoImagesDataset(Dataset):
         second_image = read_image(second_img_path).float()
         normalized_second_image = (second_image/255 - self.mean[:, None, None])/(self.std[:, None, None])
 
-        #dealing h_alpha
-        h_window = torch.tensor([])
-        if idx-self.h_alpha_window < 0: 
-            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
-        else:
-            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
-
         label = self.img_labels.iloc[idx]['mode']
         time = self.img_labels.iloc[idx]['time']
   
         labeled_imgs_dict = {'img': torch.cat((normalized_first_image.unsqueeze(0), 
                                                normalized_second_image.unsqueeze(0)), dim=0),
-                             'label':label, 'path':first_img_path, 'time':time, 'h_alpha': h_window}
+                             'label':label, 'path':first_img_path, 'time':time}
 
         return labeled_imgs_dict
 
@@ -176,20 +189,21 @@ class TwoImagesModel(nn.Module):
         return x   
     
 
-def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True):
+def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, shots_for_testing:list, shots_for_validation:list,
+                            use_ELMS: bool = True, ris_option: str = 'RIS1'):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
     'mode' columns is then transformed to [0,1,2] notation, where 0 stands for L-mode, 1 for H-mode and 2 for ELM
     '''
-
+    if ris_option not in ['RIS1', 'RIS2', 'both']:
+        raise Exception("Invalid ris_option. Choose from 'RIS1', 'RIS2', 'both'")
+    
     shot_df = pd.DataFrame([])
 
     for shot in shots:
         df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         df['shot'] = shot
-        df = df[:-100] #!!! TODO: I cut the dataframe bacuase RIS2 sometimes ends earlier than RIS1
         shot_df = pd.concat([shot_df, df], axis=0)
 
 
@@ -201,19 +215,26 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_testing:list, sho
     shot_df['mode'] = df_mode
     shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
+    if ris_option == 'RIS2':
+        shot_df['filename'] = shot_df['filename'].str.replace('RIS1', 'RIS2')
+
+    if ris_option == 'both':
+        df_ris2 = shot_df.copy()
+        df_ris2['filename'] = df_ris2['filename'].str.replace('RIS1', 'RIS2')
+        shot_df = pd.concat([shot_df, df_ris2], axis=0)
+        shot_df = shot_df.reset_index(drop=True)
 
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
-    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
+    train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
 
     return shot_df, test_df, val_df, train_df
 
 
 def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, 
                 balance_data: bool = True, shuffle: bool = True,
-                only_halpha: bool = False, second_img_opt: str = None, 
-                h_alpha_window: int = 0, ris_option: str = 'RIS1',
-                num_workers: int = 0):
+                second_img_opt: str = None, num_workers: int = 0, 
+                augmentation: bool = False):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -233,23 +254,19 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32,
     >>> get_dloader(df, path, batch_size=32, balance_data=True, shuffle=True, only_halpha=False, second_img_opt=None, h_alpha_window=0)
 
     """
-    if ris_option == 'RIS2':
-        df['filename'] = df['filename'].str.replace('RIS1', 'RIS2')
 
     if shuffle and balance_data:
         raise Exception("Can't use data shuffling and balancing simultaneously")
     
-    if only_halpha:
-        dataset = HalphaDataset(annotations=df, h_alpha_window=h_alpha_window, img_dir=path)
-    elif second_img_opt == None:
+    if second_img_opt == None:
         dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, 
-                               std=std)
+                               std=std, augmentation=augmentation)
     elif second_img_opt == 'RIS2':
         dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
-                                    second_img_opt='RIS2', h_alpha_window=h_alpha_window)
+                                    second_img_opt='RIS2', augmentation=augmentation)
     elif second_img_opt == 'RIS1':
         dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
-                                    second_img_opt='RIS1', h_alpha_window=h_alpha_window)
+                                    second_img_opt='RIS1', augmentation=augmentation)
     else:
         raise Exception("Can't initiate a dataset with given kwargs")
 
@@ -269,8 +286,6 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32,
 
     return dataloader
 
-
-#Then calculate weights
 
 def imshow(inp, title=None):
     """Display image for Tensor."""
@@ -371,7 +386,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             running_batch = 0
 
             # Save parameters before changing them. We will use this to calculate the average parameter change
-            prev_params = {name: param.clone().detach() for name, param in model.named_parameters()}
+            #prev_params = {name: param.clone().detach() for name, param in model.named_parameters()}
 
             # Iterate over data.
             for batch in tqdm(dataloaders[phase]):
@@ -398,10 +413,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] += loss.item()
+                        total_loss['train'] = 0.95*(total_loss['train']) + loss.item()
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] += loss.item()
+                        total_loss['val'] = 0.95*(total_loss['val']) + loss.item()
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0) #Why multiply by inputs.size(0)?
@@ -430,19 +445,19 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                                         MulticlassRecall(num_classes=2).to(device)(preds, labels),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
-                    #Average parameter change
-                    # After optimizer.step(), calculate the change
-                    param_change_sum = 0
-                    param_count = 0
-                    for name, param in model.named_parameters():
-                        param_change = (param - prev_params[name]).abs().mean()
-                        param_change_sum += param_change.item()
-                        param_count += 1
-                    avg_param_change = param_change_sum / param_count
+                    # #Average parameter change
+                    # # After optimizer.step(), calculate the change
+                    # param_change_sum = 0
+                    # param_count = 0
+                    # for name, param in model.named_parameters():
+                    #     param_change = (param - prev_params[name]).abs().mean()
+                    #     param_change_sum += param_change.item()
+                    #     param_count += 1
+                    # avg_param_change = param_change_sum / param_count
                     
-                    # Log the average parameter change
-                    writer.add_scalar('Average Parameter Change', avg_param_change, 
-                                      epoch * len(dataloaders[phase]) + running_batch)
+                    # # Log the average parameter change
+                    # writer.add_scalar('Average Parameter Change', avg_param_change, 
+                    #                   epoch * len(dataloaders[phase]) + running_batch)
                     
             if phase == 'train':
                 scheduler.step()
@@ -605,24 +620,6 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
         confusion_matrix_metric.update(y_hat_df, y_df)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
 
-        # F1
-        f1 = F1Score(task = 'binary', num_classes=2)(y_hat_df, y_df)
-
-        # Precision and Recall
-        precision = BinaryPrecision()(y_hat_df, y_df)
-        recall = BinaryRecall()(y_hat_df, y_df)
-
-        #accuracy
-        accuracy = len(pred_for_shot[pred_for_shot['prediction']==pred_for_shot['label']])/len(pred_for_shot)
-
-        textstr = '\n'.join((
-            f'shot {shot}',
-            r'threshhold = 0.5:',
-            r'f1=%.2f' % (f1.item(), ),
-            r'precision=%.2f' % (precision.item(), ),
-            r'recall=%.2f' % (recall.item(), ),
-            r'accuracy=%.2f' % (accuracy, )))
-
 
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
         conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
@@ -632,10 +629,8 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
                           s=2, alpha=1, label='H-mode Truth', color='maroon')
 
 
-
         conf_time_ax.set_xlabel('t [ms]')
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-        conf_time_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_time_ax.set_ylabel('Confidence')
 
         # Add grid to the plot
@@ -838,3 +833,14 @@ def calculate_auc(x, y):
     # Use numpy's trapezoidal rule integration
     auc = np.trapz(y_np, x_np)
     return auc
+
+class AddRandomNoise(object):
+    def __init__(self, mean=0., std=1.):
+        self.std = std
+        self.mean = mean
+
+    def __call__(self, tensor):
+        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)

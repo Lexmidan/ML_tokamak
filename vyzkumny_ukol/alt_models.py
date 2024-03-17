@@ -319,7 +319,7 @@ class Reshape(nn.Module):
 
 
 
-def split_df(df, shots, shots_for_testing, shots_for_validation, signal_name, use_ELMS=True, path=os.getcwd()):
+def split_df(df, shots, shots_for_training, shots_for_testing, shots_for_validation, signal_name, use_ELMS=True, path=os.getcwd()):
 
     """
     Splits the dataframe into train, test and validation sets. 
@@ -353,9 +353,10 @@ def split_df(df, shots, shots_for_testing, shots_for_validation, signal_name, us
 
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
-    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
+    train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
 
     return shot_df, test_df, val_df, train_df
+
 
 class SignalDataset(Dataset):
     '''
@@ -365,10 +366,11 @@ class SignalDataset(Dataset):
 
     '''
 
-    def __init__(self, df, window, signal_name='divlp'):
+    def __init__(self, df, window, signal_name='divlp', dpoints_in_future=160):
         self.df = df
         self.window = window
         self.signal_name = signal_name
+        self.dpoints_in_future = dpoints_in_future
 
         if self.signal_name not in ['divlp', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
             raise ValueError(f'{self.signal_name} is not a valid signal name. Please use one of the following: divlp, mcDIV, mcHFS, mcLFS, mcTOP, h_alpha')
@@ -380,14 +382,12 @@ class SignalDataset(Dataset):
 
         signal_window = torch.tensor([])
 
-        if idx < self.window: 
-            if idx == 0: #This "if" is needed because  self.df.iloc[0:0][f'{self.signal_name}'] is a scalar => signal_window[0] will fail
-                signal_window = torch.full((self.window,), self.df.iloc[0][f'{self.signal_name}'])
-            else:
-                signal_window = torch.tensor(self.df.iloc[0:idx][f'{self.signal_name}'].to_numpy())
-                signal_window = torch.cat([torch.full((self.window-idx,), signal_window[0]), signal_window])
+        if idx < self.window - self.dpoints_in_future or idx > len(self.df) - self.dpoints_in_future: 
+            signal_window = torch.full((self.window,), self.df.iloc[0][f'{self.signal_name}'])
+
         else:
-            signal_window = torch.tensor(self.df.iloc[idx-self.window:idx][f'{self.signal_name}'].to_numpy())
+            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : idx+self.dpoints_in_future]
+                                         [f'{self.signal_name}'].to_numpy())
 
         label = self.df.iloc[idx]['mode']
         time = self.df.iloc[idx]['time']
@@ -403,10 +403,10 @@ class MultipleMirnovCoilsDataset(Dataset):
 
     '''
 
-    def __init__(self, df, window):
+    def __init__(self, df, window, dpoints_in_future=160):
         self.df = df
         self.window = window
-
+        self.dpoints_in_future = dpoints_in_future
     def __len__(self):
         return len(self.df)
 
@@ -414,21 +414,23 @@ class MultipleMirnovCoilsDataset(Dataset):
 
         signal_window = torch.tensor([])
 
-        if idx < self.window: 
+        if idx < self.window - self.dpoints_in_future or idx > len(self.df) - self.dpoints_in_future: 
             #TODO: This is a bit ugly, but I don't know how to do it better
             signal_window = torch.full((self.window, 4), 0.0)
         else:
-            signal_window = torch.tensor(self.df.iloc[idx-self.window:idx][['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
-
+            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : idx+self.dpoints_in_future]
+                                         [['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
+        signal_window = signal_window.transpose(0, 1) #so batch shape corresponds to [batch_size, n_channels, window]
         label = self.df.iloc[idx]['mode']
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
         return {'label': label, 'time': time, 'mc': signal_window, 'shot': shot_num}
+
 	
 def get_dloader(df: pd.DataFrame(), batch_size: int = 32, 
                 balance_data: bool = True, shuffle: bool = False,
                 signal_window: int = 160, signal_name: str = 'divlp',
-                num_workers: int = 8, persistent_workers: bool = True):
+                num_workers: int = 8, persistent_workers: bool = True, dpoints_in_future: int = 160):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -447,9 +449,9 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     
     #If we plan to use all mirnov coils, then we need to use MultipleMirnovCoilsDataset
     if signal_name == 'mc':
-        dataset = MultipleMirnovCoilsDataset(df, window=signal_window)
+        dataset = MultipleMirnovCoilsDataset(df, window=signal_window, dpoints_in_future=dpoints_in_future)
     else:
-        dataset = SignalDataset(df, window=signal_window, signal_name=signal_name)
+        dataset = SignalDataset(df, window=signal_window, signal_name=signal_name, dpoints_in_future=dpoints_in_future)
 
     #Balance the data
     if balance_data:
@@ -471,40 +473,79 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     return dataloader
 
 class Simple1DCNN(nn.Module):
-    def __init__(self, num_classes=3, window=80, in_channels=4):
+    def __init__(self, num_classes=3, window=320, in_channels=4):
         super(Simple1DCNN, self).__init__()
         # Define the 1D convolutional layers
+
         self.window = window # Length of the input signal
-        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=128, kernel_size=3, stride=1, padding=1, dilation=1)
-        self.conv2 = nn.Conv1d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1, dilation=2)
+
+        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=128, kernel_size=32, stride=1, padding=1, dilation=1)
         self.batch_norm1 = nn.BatchNorm1d(128)
+
+        self.conv2 = nn.Conv1d(in_channels=128, out_channels=64, kernel_size=32, stride=1, padding=1, dilation=2)
+        self.batch_norm2 = nn.BatchNorm1d(64)
+
+        self.avg_pool = nn.AvgPool1d(32, stride=8, padding=0, ceil_mode=False)
+        self.max_pool = nn.MaxPool1d(32, stride=8, padding=0, ceil_mode=False)
+
+        ## calculate input size for the fully connected layer
+        def output_size_of_1d_conv_layer(input_length, kernel_size, padding, dilation, stride):
+            output_length = np.floor((input_length + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1) // stride[0]) + 1
+            return output_length
+        
+        first_layer_out_length = output_size_of_1d_conv_layer(window, self.conv1.kernel_size, 
+                                                           self.conv1.padding, 
+                                                           self.conv1.dilation, 
+                                                           self.conv1.stride)
+        
+        second_layer_out_length = output_size_of_1d_conv_layer(first_layer_out_length, 
+                                                            self.conv2.kernel_size, 
+                                                            self.conv2.padding, 
+                                                            self.conv2.dilation, 
+                                                            self.conv2.stride)
+        
+        pool_layer_out_length = output_size_of_1d_conv_layer(second_layer_out_length, 
+                                                          self.avg_pool.kernel_size, 
+                                                          self.avg_pool.padding, 
+                                                          (1,), 
+                                                          self.avg_pool.stride)
+        
+        input_length_for_fc = int(pool_layer_out_length*2*self.batch_norm2.num_features)
+
         # Define a fully connected layer for classification
-        ### in_features = floor(((input_length + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1)
-        self.fc = nn.Linear(in_features=16 * (window - 2), out_features=num_classes)
+        self.fc1 = nn.Linear(in_features=input_length_for_fc, out_features=256)
+        self.fc2 = nn.Linear(in_features=256, out_features=num_classes)
 
     def forward(self, x):
-        # Apply 1D convolutions
-        if len(x.size()) == 2:  # Assuming the shape is [batch_size, 320, 4] for 4-channel input or [batch_size, 320] for 1-channel
-            # Input is in the form [batch_size, length], expected for 1-channel data
-            # Add a channel dimension
-            x = x.unsqueeze(1)  # Now shape is [batch_size, 1, length]
+        if len(x.size()) == 2:  # if the shape is [batch_size, window] corresponding to 1-channel
+            x = x.unsqueeze(1)  # Now shape is [batch_size, 1, window]
         else:
-            # Input is in the form [batch_size, 4, length], so transpose to match [batch_size, channels, length]
-            x = x.transpose(1, 2)  # Now shape is [batch_size, channels, length]
+            # if the shape is [batch_size, window, n] corresponding to n-channels
+            x = x.transpose(1, 2)  # Now shape is [batch_size, n, window]
 
-        x = F.relu(self.conv1(x))
-        #Batch norm
-        x = F.relu(self.conv2(x))
+        #First Convolution Activation BatchNorm
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = self.batch_norm1(x)
+
+        #Second Convolution Activation BatchNorm
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = self.batch_norm2(x)
+
+        x1 = self.avg_pool(x)
+        x2 = self.max_pool(x)
+        x = torch.cat((x1, x2), dim=1)
         
-        x = self.batch_norm1(x)  #!!! should I use some activation function here?
-
-        # max/average pooling size[(max + average pooling)/2]
         # Flatten the tensor for the fully connected layer
         x = x.view(x.size(0), -1)
 
-        # Apply the fully connected layer and return the output
-        x = self.fc(x)
+        # # Apply the fully connected layer and return the output
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+
         return x
+    
 	
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
@@ -558,10 +599,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] += loss.item()
+                        total_loss['train'] = 0.95*(total_loss['train']) + loss.item()
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] += loss.item()                        
+                        total_loss['val'] = 0.95*(total_loss['val']) + loss.item()                        
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)

@@ -18,6 +18,7 @@ import alt_models as am
 def train_and_test_alt_model(signal_name = 'divlp',
                             architecture = 'InceptionTime',
                             signal_window = 320,
+                            dpoints_in_future = 160,
                             batch_size = 512,
                             num_workers = 8,
                             num_epochs = 12,
@@ -37,7 +38,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     pl.seed_everything(random_seed)
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     path = Path(os.getcwd())
-    comment_for_model_name = architecture + '_on_' + signal_name  + str(signal_window) +' dpoints ' + comment_for_model_name
+    comment_for_model_name = architecture  + comment_for_model_name
     
     # Load data
     shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
@@ -45,8 +46,9 @@ def train_and_test_alt_model(signal_name = 'divlp',
     shot_numbers = shot_for_alt['shot']
     shots_for_testing = shot_for_alt[shot_for_alt['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_alt[shot_for_alt['used_as'] == 'val']['shot']
+    shots_for_training = shot_for_alt[shot_for_alt['used_as'] == 'train']['shot']
 
-    shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_testing, 
+    shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_training, shots_for_testing, 
                                                      shots_for_validation, use_ELMS=True, 
                                                      signal_name=signal_name)
 
@@ -92,6 +94,24 @@ def train_and_test_alt_model(signal_name = 'divlp',
 
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs) #!!!
 
+    hyperparameters = {
+    'batch_size': batch_size,
+    'num_epochs': num_epochs,
+    'optimizer': optimizer.__class__.__name__,
+    'criterion': criterion.__class__.__name__,
+    'learning_rate_max': learning_rate_max,
+    'scheduler': exp_lr_scheduler.__class__.__name__,
+    'shots_for_testing': torch.tensor(shots_for_testing.values.tolist()),
+    'shots_for_validation': torch.tensor(shots_for_validation.values.tolist()),
+    'shots_for_training': torch.tensor(shots_for_training.values.tolist()),
+    'signal_name': signal_name,
+    'num_classes': 3,
+    'random_seed': random_seed,
+    'architecture': architecture,
+    'signal_window': signal_window,
+    'dpoints_in_future': dpoints_in_future
+    }
+
     # Train model
     model = am.train_model(untrained_model, criterion, optimizer, exp_lr_scheduler, 
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs, 
@@ -104,7 +124,11 @@ def train_and_test_alt_model(signal_name = 'divlp',
     metrics = am.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
 
     am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
-
+    writer.add_hparams(hyperparameters, {'Accuracy on test_dataset': metrics['accuracy'], 
+                                         'F1 metric on test_dataset':metrics['f1'], 
+                                         'Precision on test_dataset':metrics['precision'], 
+                                         'Recall on test_dataset':metrics['recall']})
+    writer.close()
 
 if __name__ == "__main__":
     train_and_test_alt_model(signal_name = 'mc',
