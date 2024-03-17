@@ -1,17 +1,17 @@
 import os
-
 from pathlib import Path
-import matplotlib.pyplot as plt
-from datetime import datetime
-import time 
-import re
+import sys
+# sys.path.append('/compass/Shared/Common/IT/projects/user-libraries/python/cdb_extras/stable/cdb_extras')
+# import xarray_support as cdbxr   # načítání dat z databáze COMPASSu
 from cdb_extras import xarray_support as cdbxr   # načítání dat z databáze COMPASSu
 from pyCDB import client
 import pandas as pd
-import matplotlib.pyplot as plt
-import imgs_processing as imgs
+import xrscipy.signal as dsp
 import numpy as np
-from tqdm.auto import tqdm
+from tqdm import tqdm
+
+import imgs_processing as imgs
+
 cdb = client.CDBClient()
 
 path = Path('/compass/Shared/Users/bogdanov/vyzkumny_ukol')
@@ -19,21 +19,28 @@ os.chdir(path)
 
 def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
     #dirs where to save the csv files
-    directories = {'h_alpha':'data/h_alpha_signal', 
-                    'mc':'data/mirnov_coil_signal', 
+    directories = {'h_alpha':'data/h_alpha_signal',  
                     'divlp':'data/langmuir_probe_signal'}
-
+    
+    #RobustScaler for scaling the signals
+    scaler = imgs.RobustScalerNumpy().fit_transform
     for shot in tqdm(shot_numbers):
         print('working on shot:', shot)
 
-        # Load signals from CDB
-        h_alpha_signal = cdb.get_signal(f"H_alpha/SPECTROMETRY_RAW:{shot}")
-        mc_signal = cdb.get_signal(f"Mirnov_coil_A_theta_13_RAW/MAGNETICS_RAW:{shot}")
-        divlp_signal = cdb.get_signal(f"DIVLPB01/STRATUS:{shot}")
+        #Load shot from CDBClient
+        shot_from_client = cdbxr.Shot(shot)
+        
+        # Load signals from CDBClient
+        h_alpha_signal = - shot_from_client['H_alpha']
+        divlp_signal = shot_from_client['DIVLPB01']
 
         # Load labels from CDB
         t_ELM_start = cdb.get_signal(f"t_ELM_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
-        t_ELM_end = cdb.get_signal(f"t_ELM_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+        t_ELM_peak = cdb.get_signal(f"t_ELM_peak/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+
+        #Calculate t_elm_end from t_ELM_peak and t_ELM_start (it should be symetric to t_ELM_peak)
+        t_ELM_end = 2 * t_ELM_peak.data - t_ELM_start.data
+
         t_H_mode_start = cdb.get_signal(f"t_H_mode_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
         t_H_mode_end = cdb.get_signal(f"t_H_mode_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
 
@@ -42,9 +49,9 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
         try:
             len(t_ELM_start.data)
         except:
-            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data}, index=[0])
+            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end}, index=[0])
         else:
-            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data})
+            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end})
 
         try:
             len(t_H_mode_start.data)
@@ -54,24 +61,16 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
             t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data})
 
 
-        for signal, signal_name in zip([h_alpha_signal, mc_signal, divlp_signal], ['h_alpha', 'mc', 'divlp']):
-            signal_df = pd.DataFrame({'time':signal.time_axis.data, signal_name:signal.data})
+        for signal, signal_name in zip([h_alpha_signal, divlp_signal], ['h_alpha', 'divlp']):
+            # Decimate signal to 300 kHz
+            signal = dsp.decimate(signal, target_fs=300) 
 
-            # Set time as index
+            #Scale signal using RobustScaler
+            signal = scaler(signal)
+
+            # Create a DataFrame from the decimated signal xarray
+            signal_df = pd.DataFrame({'time':signal.time.values, signal_name:signal.data})
             signal_df = signal_df.set_index('time')
-
-            ### Downsample data
-            #First define desired frequency
-            desired_frequency = 300 #in kHz
-            time_resolution = 1/desired_frequency
-            # Find how many rows do we need to skip to get the desired frequency 
-            #(raw data have different frequencies for different shots)
-            skip_rows = 0
-            while signal_df.index[skip_rows] - signal_df.index[0]  < time_resolution:
-                skip_rows += 1
-
-            # Downsample
-            signal_df = signal_df.iloc[::skip_rows]
 
             # Remove data with no plasma
             discharge_start, discharge_end = imgs.discharge_duration(shot, 4e4)
@@ -89,13 +88,84 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
             # Save data
             signal_df.to_csv(f'{directories[signal_name]}/shot_{shot}.csv')
 
+
+def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023'):
+    
+    #RobustScaler for scaling the signals
+    scaler = imgs.RobustScalerNumpy().fit_transform
+    for shot in tqdm(shot_numbers):
+        print('working on shot:', shot)
+
+        #Load shot from CDBClient
+        shot_from_client = cdbxr.Shot(shot)
+        
+        # Load signals from CDBClient
+        mcHFS_signal = shot_from_client['Mirnov_coil_A_theta_13_RAW']
+        mcLFS_signal = shot_from_client['Mirnov_coil_A_theta_02_RAW']
+        mcDIV_signal = shot_from_client['Mirnov_coil_A_theta_19_RAW']
+        mcTOP_signal = shot_from_client['Mirnov_coil_A_theta_07_RAW']
+
+        # Load labels from CDB
+        t_ELM_start = cdb.get_signal(f"t_ELM_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+        t_ELM_peak = cdb.get_signal(f"t_ELM_peak/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+
+        #Calculate t_elm_end from t_ELM_peak and t_ELM_start (it should be symetric to t_ELM_peak)
+        t_ELM_end = 2 * t_ELM_peak.data - t_ELM_start.data
+
+        t_H_mode_start = cdb.get_signal(f"t_H_mode_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+        t_H_mode_end = cdb.get_signal(f"t_H_mode_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+
+        #TODO:  To create a DataFrame with only one row, one needs to specify an index, 
+        # so if plasma enters H-mode more than once during one shot index have to be passed. Thus crutch with try: except:
+        try:
+            len(t_ELM_start.data)
+        except:
+            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end}, index=[0])
+        else:
+            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end})
+
+        try:
+            len(t_H_mode_start.data)
+        except:
+            t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data}, index=[0])
+        else:
+            t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data})
+
+        # Decimate signal to 300 kHz and scale it using RobustScaler
+        mcHFS_signal, mcLFS_signal, mcDIV_signal, mcTOP_signal = map(lambda signal: scaler(dsp.decimate(signal, target_fs=300)),
+                                                             [mcHFS_signal, mcLFS_signal, mcDIV_signal, mcTOP_signal])
+
+        # Create a DataFrame from the decimated signal xarray
+        signal_df = pd.DataFrame({'time': mcHFS_signal.time.values, 
+                                  'mcHFS': mcHFS_signal.data, 
+                                  'mcLFS': mcLFS_signal.data, 
+                                  'mcDIV': mcDIV_signal.data, 
+                                  'mcTOP': mcTOP_signal.data})
+        
+        signal_df = signal_df.set_index('time')
+
+        # Remove data with no plasma
+        discharge_start, discharge_end = imgs.discharge_duration(shot, 4e4)
+        signal_df = signal_df[np.logical_and(signal_df.index>discharge_start, signal_df.index<discharge_end)]
+
+        # Create a column with mode labels. These are all L-mode by default.
+        signal_df['mode'] = 'L-mode'
+
+        for H_mode in t_H_mode.values:
+            signal_df.loc[H_mode[0]:H_mode[1], 'mode'] = 'H-mode'
+
+        for elm in t_ELM.values:
+            signal_df.loc[elm[0]:elm[1], 'mode'] = 'ELM'
+
+        # Save data
+        signal_df.to_csv(f'data/mirnov_coil_signal/shot_{shot}.csv')
+
 if __name__ == "__main__":
-    #dirs to find the shot numbers. This is not used in the code, but it is useful to know the shot numbers
-    data_dir_path = f'{path}/data/LH_alpha'
-    file_names = os.listdir(data_dir_path)
-    shot_numbers = [int(re.search(r'shot_(\d+)', file_name).group(1)) for file_name in file_names]
-    shot_numbers.remove(17848) # this shot has no langmuir probe data
+    shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
+    shot_for_alt = shot_usage[shot_usage['used_for_alt']]
+    shot_numbers = shot_for_alt['shot']
     
     process_data_for_alt_models(shot_numbers, variant='seidl_2023')
+    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023')
     
     

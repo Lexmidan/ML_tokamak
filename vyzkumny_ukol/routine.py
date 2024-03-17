@@ -9,20 +9,39 @@ if __name__ == "__main__":
     amtr.train_and_test_alt_model(signal_name = 'mc',
                             architecture = 'InceptionTime',
                             signal_window = 160,
-                            batch_size = 64,
+                            batch_size = 128,
                             num_workers = 32,
                             num_epochs = 24,
-                            learning_rate_max = 0.001,
-                            comment_for_model_name = comment)
+                            learning_rate_max = 0.01,
+                            comment_for_model_name = f' 4 MIRNOV COILS, batch_size_128, num_epochs_24, learning_rate_max_0.001, AdamW')
     
 
     amtr.train_and_test_alt_model(signal_name = 'mc',
                             architecture = 'Simple1DCNN',
                             signal_window = 160,
-                            batch_size = 64,
+                            batch_size = 128,
                             num_workers = 32,
                             num_epochs = 12,
-                            learning_rate_max = 0.001,
-                            comment_for_model_name = f'batch_size_64, num_epochs_12, learning_rate_max_0.001, AdamW, fixed scheduler')
+                            learning_rate_max = 0.01,
+                            comment_for_model_name = f' 4 MIRNOV COILS, batch_size_64, num_epochs_12, learning_rate_max_0.001, AdamW')
+    
+    amtr.train_and_test_alt_model(signal_name = 'mc',
+                            architecture = 'InceptionTime',
+                            signal_window = 320,
+                            batch_size = 128,
+                            num_workers = 32,
+                            num_epochs = 24,
+                            learning_rate_max = 0.01,
+                            comment_for_model_name = f' 4 MIRNOV COILS, batch_size_64, num_epochs_12, learning_rate_max_0.001, AdamW')
+    
+
+    amtr.train_and_test_alt_model(signal_name = 'mc',
+                            architecture = 'Simple1DCNN',
+                            signal_window = 320,
+                            batch_size = 128,
+                            num_workers = 32,
+                            num_epochs = 12,
+                            learning_rate_max = 0.01,
+                            comment_for_model_name = f' 4 MIRNOV COILS, batch_size_64, num_epochs_12, learning_rate_max_0.001, AdamW')
 
     

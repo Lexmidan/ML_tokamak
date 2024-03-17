@@ -5,7 +5,6 @@ import time
 from datetime import datetime
 
 import torch
-from tqdm import tqdm
 from torch.optim import lr_scheduler
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
@@ -29,6 +28,12 @@ def train_and_test_alt_model(signal_name = 'divlp',
     """ 
     Trains and tests alternative model on given signal.
     """
+    # Set up number of input channels. If mc, then we use all mirnov coils, else just one signal.
+    if signal_name == 'mc':
+        in_channels = 4
+    else:
+        in_channels = 1
+
     pl.seed_everything(random_seed)
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     path = Path(os.getcwd())
@@ -36,10 +41,10 @@ def train_and_test_alt_model(signal_name = 'divlp',
     
     # Load data
     shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
-    shot_for_ris = shot_usage[shot_usage['used_for_alt']]
-    shot_numbers = shot_for_ris['shot']
-    shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
-    shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
+    shot_for_alt = shot_usage[shot_usage['used_for_alt']]
+    shot_numbers = shot_for_alt['shot']
+    shots_for_testing = shot_for_alt[shot_for_alt['used_as'] == 'test']['shot']
+    shots_for_validation = shot_for_alt[shot_for_alt['used_as'] == 'val']['shot']
 
     shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_testing, 
                                                      shots_for_validation, use_ELMS=True, 
@@ -74,7 +79,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     model_path = Path(f'{path}/runs/{timestamp}/model.pt')
 
     # Create model
-    untrained_model = am.select_model_architecture(architecture=architecture, window=signal_window, num_classes=3)
+    untrained_model = am.select_model_architecture(architecture=architecture, window=signal_window, num_classes=3, in_channels=in_channels)
     untrained_model = untrained_model.to(device)
 
     # Write model graph to tensorboard

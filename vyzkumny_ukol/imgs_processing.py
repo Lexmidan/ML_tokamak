@@ -225,7 +225,6 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
 
         #Appending columns with paths of the RIS imgs
         LorH['filename'] = np.array(ris1_names)
-        LorH = add_average_halpha_column(LorH, shot)
         LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
     
@@ -267,6 +266,41 @@ def add_average_halpha_column(lh_mode_df, shot):
     lh_mode_df['h_alpha'] = average_currents
 
     return lh_mode_df
+
+class RobustScalerNumpy:
+    def __init__(self):
+        self.median = None
+        self.iqr = None
+
+    def fit(self, X):
+        """
+        Compute the median and IQR of X to later use for scaling.
+        X should be a NumPy array.
+        """
+        self.median = np.median(X, axis=0)
+        q1 = np.percentile(X, 25, axis=0)
+        q3 = np.percentile(X, 75, axis=0)
+        self.iqr = q3 - q1
+
+    def transform(self, X):
+        """
+        Scale features of X according to the median and IQR.
+        """
+        if self.median is None or self.iqr is None:
+            raise RuntimeError("Must fit the scaler before transforming data.")
+
+        # Avoid division by zero
+        iqr_nonzero = np.where(self.iqr == 0, 1, self.iqr)
+        return (X - self.median) / iqr_nonzero
+
+    def fit_transform(self, X):
+        """
+        Fit to data, then transform it.
+        """
+        self.fit(X)
+        return self.transform(X)
+
+
 
 
 if __name__ == "__main__":

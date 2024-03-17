@@ -317,38 +317,6 @@ class Reshape(nn.Module):
 		return x.view(-1, *self.out_shape)
 ##############################################################################	
 
-class RobustScalerNumpy:
-    def __init__(self):
-        self.median = None
-        self.iqr = None
-
-    def fit(self, X):
-        """
-        Compute the median and IQR of X to later use for scaling.
-        X should be a NumPy array.
-        """
-        self.median = np.median(X, axis=0)
-        q1 = np.percentile(X, 25, axis=0)
-        q3 = np.percentile(X, 75, axis=0)
-        self.iqr = q3 - q1
-
-    def transform(self, X):
-        """
-        Scale features of X according to the median and IQR.
-        """
-        if self.median is None or self.iqr is None:
-            raise RuntimeError("Must fit the scaler before transforming data.")
-
-        # Avoid division by zero
-        iqr_nonzero = np.where(self.iqr == 0, 1, self.iqr)
-        return (X - self.median) / iqr_nonzero
-
-    def fit_transform(self, X):
-        """
-        Fit to data, then transform it.
-        """
-        self.fit(X)
-        return self.transform(X)
 
 
 def split_df(df, shots, shots_for_testing, shots_for_validation, signal_name, use_ELMS=True, path=os.getcwd()):
@@ -358,43 +326,36 @@ def split_df(df, shots, shots_for_testing, shots_for_validation, signal_name, us
     ALSO SCALES THE DATA
     """
     signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal', 
-                         'mc': f'{path}/data/mirnov_coil_signal', 
+                         'mc': f'{path}/data/mirnov_coil_signal',
+                         'mcDIV': f'{path}/data/mirnov_coil_signal', 
+                         'mcHFS': f'{path}/data/mirnov_coil_signal', 
+                         'mcLFS': f'{path}/data/mirnov_coil_signal', 
+                         'mcTOP': f'{path}/data/mirnov_coil_signal', 
                          'divlp': f'{path}/data/langmuir_probe_signal'}
     
-    if signal_name not in ['divlp', 'mc', 'h_alpha']:
+    if signal_name not in ['divlp', 'mc', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
             raise ValueError(f'{signal_name} is not a valid signal name. Please use one of the following: divlp, mc, h_alpha')
-        
-    shot_df = pd.DataFrame([])
-
+    
+    #Create a dataframe with all the shots
+    shot_df = pd.DataFrame()
     for shot in shots:
         df = pd.read_csv(f'{signal_paths_dict[signal_name]}/shot_{shot}.csv')
         df['shot'] = shot
         shot_df = pd.concat([shot_df, df], axis=0)
 
-    #Scale the data
-    scaler = RobustScalerNumpy().fit_transform
-    scaled_df = pd.DataFrame(scaler(shot_df[signal_name]), 
-                             columns=shot_df.columns)
-    scaled_df['shot'] = shot_df['shot']
-    scaled_df['mode'] = shot_df['mode']
-    scaled_df['time'] = shot_df['time']
-    
     #Replace the mode with a number
-    df_mode = scaled_df['mode'].copy()
-    df_mode[scaled_df['mode']=='L-mode'] = 0
-    df_mode[scaled_df['mode']=='H-mode'] = 1
-    df_mode[scaled_df['mode']=='ELM'] = 2 if use_ELMS else 1
-    scaled_df['mode'] = df_mode
-    scaled_df = scaled_df.reset_index(drop=True) #each shot has its own indexing
+    df_mode = shot_df['mode'].copy()
+    df_mode[shot_df['mode']=='L-mode'] = 0
+    df_mode[shot_df['mode']=='H-mode'] = 1
+    df_mode[shot_df['mode']=='ELM'] = 2 if use_ELMS else 1
+    shot_df['mode'] = df_mode
+    shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
-    if signal_name == 'h_alpha':
-         scaled_df['h_alpha']*=-1
+    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
+    val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
+    train_df = shot_df[(~shot_df['shot'].isin(shots_for_validation))&(~shot_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
 
-    test_df = scaled_df[scaled_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
-    val_df = scaled_df[scaled_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
-    train_df = scaled_df[(~scaled_df['shot'].isin(shots_for_validation))&(~scaled_df['shot'].isin(shots_for_testing))].reset_index(drop=True)
-
-    return scaled_df, test_df, val_df, train_df
+    return shot_df, test_df, val_df, train_df
 
 class SignalDataset(Dataset):
     '''
@@ -409,8 +370,8 @@ class SignalDataset(Dataset):
         self.window = window
         self.signal_name = signal_name
 
-        if self.signal_name not in ['divlp', 'mc', 'h_alpha']:
-            raise ValueError(f'{self.signal_name} is not a valid signal name. Please use one of the following: divlp, mc, h_alpha')
+        if self.signal_name not in ['divlp', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
+            raise ValueError(f'{self.signal_name} is not a valid signal name. Please use one of the following: divlp, mcDIV, mcHFS, mcLFS, mcTOP, h_alpha')
 
     def __len__(self):
         return len(self.df)
@@ -432,6 +393,37 @@ class SignalDataset(Dataset):
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
         return {'label': label, 'time': time, f'{self.signal_name}': signal_window, 'shot': shot_num}
+
+
+class MultipleMirnovCoilsDataset(Dataset):
+    '''
+        Parameters:
+            df (DataFrame): The DataFrame containing annotations for the dataset.
+            window (int): The size of the time window for fetching sequential data.
+
+    '''
+
+    def __init__(self, df, window):
+        self.df = df
+        self.window = window
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+
+        signal_window = torch.tensor([])
+
+        if idx < self.window: 
+            #TODO: This is a bit ugly, but I don't know how to do it better
+            signal_window = torch.full((self.window, 4), 0.0)
+        else:
+            signal_window = torch.tensor(self.df.iloc[idx-self.window:idx][['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
+
+        label = self.df.iloc[idx]['mode']
+        time = self.df.iloc[idx]['time']
+        shot_num = self.df.iloc[idx]['shot']
+        return {'label': label, 'time': time, 'mc': signal_window, 'shot': shot_num}
 	
 def get_dloader(df: pd.DataFrame(), batch_size: int = 32, 
                 balance_data: bool = True, shuffle: bool = False,
@@ -453,8 +445,13 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     if shuffle and balance_data:
         raise Exception("Can't use data shuffling and balancing simultaneously")
     
-    dataset = SignalDataset(df, window=signal_window, signal_name=signal_name)
+    #If we plan to use all mirnov coils, then we need to use MultipleMirnovCoilsDataset
+    if signal_name == 'mc':
+        dataset = MultipleMirnovCoilsDataset(df, window=signal_window)
+    else:
+        dataset = SignalDataset(df, window=signal_window, signal_name=signal_name)
 
+    #Balance the data
     if balance_data:
         mode_weight = (1/df['mode'].value_counts()).values
         sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
@@ -474,23 +471,34 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     return dataloader
 
 class Simple1DCNN(nn.Module):
-    def __init__(self, num_classes=3, window=80):
+    def __init__(self, num_classes=3, window=80, in_channels=4):
         super(Simple1DCNN, self).__init__()
         # Define the 1D convolutional layers
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1, dilation=1)
-        self.conv2 = nn.Conv1d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1, dilation=2)
-        self.batch_norm1 = nn.BatchNorm1d(32)
+        self.window = window # Length of the input signal
+        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=128, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.conv2 = nn.Conv1d(in_channels=16, out_channels=16, kernel_size=3, stride=1, padding=1, dilation=2)
+        self.batch_norm1 = nn.BatchNorm1d(128)
         # Define a fully connected layer for classification
         ### in_features = floor(((input_length + 2*padding - dilation*(kernel_size - 1) - 1) // stride) + 1)
-        self.fc = nn.Linear(in_features=32 * (window - 2), out_features=num_classes)
+        self.fc = nn.Linear(in_features=16 * (window - 2), out_features=num_classes)
 
     def forward(self, x):
         # Apply 1D convolutions
-        x = x.unsqueeze(1)
+        if len(x.size()) == 2:  # Assuming the shape is [batch_size, 320, 4] for 4-channel input or [batch_size, 320] for 1-channel
+            # Input is in the form [batch_size, length], expected for 1-channel data
+            # Add a channel dimension
+            x = x.unsqueeze(1)  # Now shape is [batch_size, 1, length]
+        else:
+            # Input is in the form [batch_size, 4, length], so transpose to match [batch_size, channels, length]
+            x = x.transpose(1, 2)  # Now shape is [batch_size, channels, length]
+
         x = F.relu(self.conv1(x))
+        #Batch norm
         x = F.relu(self.conv2(x))
+        
         x = self.batch_norm1(x)  #!!! should I use some activation function here?
 
+        # max/average pooling size[(max + average pooling)/2]
         # Flatten the tensor for the fully connected layer
         x = x.view(x.size(0), -1)
 
@@ -525,11 +533,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             running_loss = 0.0
             running_corrects = 0
             running_batch = 0
+
             # Iterate over data.
-            #TODO: eliminate the need in that dummy iterative for tensorboard part
             for batch in tqdm(dataloaders[phase]):
-                
-                inputs = batch[f'{signal_name}'].to(device).float() # #TODO: is it smart to convert double to float here? 
+                inputs = batch[f'{signal_name}'].to(device).float()
                 labels = batch['label'].to(device)
                 
                 running_batch += 1
@@ -783,11 +790,11 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
 
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==1])*[1], 
-                          s=2, alpha=1, label='H-mode Truth', color='maroon')
+                          s=5, alpha=1, label='H-mode Truth', color='maroon')
         
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
-                          s=2, alpha=1, label='ELM Truth', color='royalblue')
+                          s=5, alpha=1, label='ELM Truth', color='royalblue')
     
         conf_time_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_time_ax.set_xlabel('t [ms]')
@@ -853,7 +860,7 @@ def matplotlib_figure_to_pil_image(fig):
     return image
 
 
-def select_model_architecture(architecture: str, num_classes: int, window: int):
+def select_model_architecture(architecture: str, num_classes: int, window: int, in_channels: int = 1):
     """
     Selects and returns a model architecture based on the specified architecture name.
 
@@ -871,9 +878,9 @@ def select_model_architecture(architecture: str, num_classes: int, window: int):
 
     if architecture == 'InceptionTime':
         model = nn.Sequential(
-                    Reshape(out_shape=(1, window)),
+                    Reshape(out_shape=(in_channels, window)),
                     InceptionBlock(
-                        in_channels=1, 
+                        in_channels=in_channels, 
                         n_filters=32, 
                         kernel_sizes=[5, 11, 23],
                         bottleneck_channels=32,
@@ -895,7 +902,7 @@ def select_model_architecture(architecture: str, num_classes: int, window: int):
 
 
     elif architecture == 'Simple1DCNN':
-        model = Simple1DCNN(num_classes=num_classes, window=window)
+        model = Simple1DCNN(num_classes=num_classes, window=window, in_channels=in_channels)
 
     else:
         raise ValueError(f'{architecture} is not a valid architecture. Please use one of the following: InceptionTime, Simple1DCNN')

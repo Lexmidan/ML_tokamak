@@ -529,7 +529,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
         recall = BinaryRecall()(y_hat_df, y_df)
 
         # Precision-Recall curve
-        pr_roc_auc = pr_roc_auc(y_df, softmax_out[:,1], task='binary')
+        pr_roc = pr_roc_auc(y_df, softmax_out[:,1], task='binary')
 
         # Accuracy
         accuracy = len(preds[preds['prediction'] == preds['label']]) / len(preds)
@@ -546,12 +546,12 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
 
-        pr_roc_auc['roc_curve'][1].text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+        pr_roc['roc_curve'][1].text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
 
         # Open the saved images using Pillow
-        roc_img = matplotlib_figure_to_pil_image(pr_roc_auc['roc_curve'][0])
+        roc_img = matplotlib_figure_to_pil_image(pr_roc['roc_curve'][0])
         conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
-        pr_curve_img = matplotlib_figure_to_pil_image(pr_roc_auc['pr_curve'][0])
+        pr_curve_img = matplotlib_figure_to_pil_image(pr_roc['pr_curve'][0])
         combined_image = Image.new('RGB', (conf_matrix_img.width + pr_curve_img.width + roc_img.width,\
                                             conf_matrix_img.height))
 
@@ -570,7 +570,7 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
                 
         return {'prediction_df': preds, 'confusion_matrix': (conf_matrix_fig, conf_matrix_ax), 'f1': f1,
                 'precision': precision, 'recall': recall, 'accuracy': accuracy,
-                'PR_ROC_AUC': pr_roc_auc}
+                'PR_ROC_AUC': pr_roc}
     else:
         return {'prediction_df': preds}
     
@@ -747,16 +747,16 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
         # Create the PR and ROC curves
         fig_pr, ax_pr = plt.subplots()
         scatter_pr = ax_pr.scatter(recall, precision, c=sorted_pred, cmap=cmap, s=2)
-        #ax_pr.set_xlim(0, 1)
-        #ax_pr.set_ylim(0, 1)
+        ax_pr.set_xlim(-0.07, 1.07)
+        ax_pr.set_ylim(-0.07, 1.07)
         ax_pr.set_xlabel('Recall')
         ax_pr.set_ylabel('Precision')
         ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
 
         fig_roc, ax_roc = plt.subplots()
         scatter_roc = ax_roc.scatter(fpr, tpr, c=sorted_pred, cmap=cmap, s=2)
-        ax_roc.set_xlim(0, 1)
-        ax_roc.set_ylim(0, 1)
+        ax_roc.set_xlim(-0.07, 1.07)
+        ax_roc.set_ylim(-0.07, 1.07)
         ax_roc.set_xlabel("False Positive Rate")
         ax_roc.set_ylabel("True Positive Rate")
         ax_roc.set_title(f'ROC AUC: {auc_roc:.4f}')
@@ -833,7 +833,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
 def calculate_auc(x, y):
     # Convert to numpy arrays for integration
     x_np = x.numpy()
-    y_np =y.numpy()
+    y_np = y.numpy()
 
     # Use numpy's trapezoidal rule integration
     auc = np.trapz(y_np, x_np)
