@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import time 
 from datetime import datetime
+import json
 
 import torch
 from torch.optim import lr_scheduler
@@ -19,6 +20,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
                             architecture = 'InceptionTime',
                             signal_window = 320,
                             dpoints_in_future = 160,
+                            sampling_freq = 300,
                             batch_size = 512,
                             num_workers = 8,
                             num_epochs = 12,
@@ -50,7 +52,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
 
     shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_training, shots_for_testing, 
                                                      shots_for_validation, use_ELMS=True, 
-                                                     signal_name=signal_name)
+                                                     signal_name=signal_name, sampling_freq=sampling_freq)
 
 
     # Create dataloaders
@@ -106,6 +108,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     'shots_for_training': torch.tensor(shots_for_training.values.tolist()),
     'signal_name': signal_name,
     'num_classes': 3,
+    'sampling_frequency':sampling_freq,
     'random_seed': random_seed,
     'architecture': architecture,
     'signal_window': signal_window,
@@ -115,7 +118,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     # Train model
     model = am.train_model(untrained_model, criterion, optimizer, exp_lr_scheduler, 
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs, 
-                        chkpt_path = model_path.with_name(f'{model_path.stem}_chkpt{model_path.suffix}'),
+                        chkpt_path = model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'),
                         signal_name=signal_name)
 
     torch.save(model.state_dict(), model_path)
@@ -124,11 +127,23 @@ def train_and_test_alt_model(signal_name = 'divlp',
     metrics = am.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
 
     am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
-    writer.add_hparams(hyperparameters, {'Accuracy on test_dataset': metrics['accuracy'], 
-                                         'F1 metric on test_dataset':metrics['f1'], 
-                                         'Precision on test_dataset':metrics['precision'], 
-                                         'Recall on test_dataset':metrics['recall']})
+
+    one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
+                        'F1 metric on test_dataset':metrics['f1'], 
+                        'Precision on test_dataset':metrics['precision'], 
+                        'Recall on test_dataset':metrics['recall']}
+
+    writer.add_hparams(hyperparameters, one_digit_metrics)
     writer.close()
+    
+    # Save hyperparameters and metrics to a JSON file
+    for key in ['shots_for_testing', 'shots_for_validation', 'shots_for_training']:
+        hyperparameters[key] = hyperparameters[key].tolist()  # Convert tensors to lists
+    all_hparams = {**hyperparameters, **metrics}
+    # Convert to JSON
+    json_str = json.dumps(all_hparams, indent=4)
+    with open(f'{path}/runs/{timestamp}_last_fc/hparams.json', 'w') as f:
+        f.write(json_str)
 
 if __name__ == "__main__":
     train_and_test_alt_model(signal_name = 'mc',

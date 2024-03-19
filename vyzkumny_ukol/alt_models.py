@@ -319,19 +319,21 @@ class Reshape(nn.Module):
 
 
 
-def split_df(df, shots, shots_for_training, shots_for_testing, shots_for_validation, signal_name, use_ELMS=True, path=os.getcwd()):
+def split_df(df, shots, shots_for_training, shots_for_testing, 
+             shots_for_validation, signal_name, use_ELMS=True, 
+             path=os.getcwd(), sampling_freq=300):
 
     """
     Splits the dataframe into train, test and validation sets. 
     ALSO SCALES THE DATA
     """
-    signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal', 
-                         'mc': f'{path}/data/mirnov_coil_signal',
-                         'mcDIV': f'{path}/data/mirnov_coil_signal', 
-                         'mcHFS': f'{path}/data/mirnov_coil_signal', 
-                         'mcLFS': f'{path}/data/mirnov_coil_signal', 
-                         'mcTOP': f'{path}/data/mirnov_coil_signal', 
-                         'divlp': f'{path}/data/langmuir_probe_signal'}
+    signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal_{sampling_freq}kHz', 
+                         'mc': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz',
+                         'mcDIV': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
+                         'mcHFS': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
+                         'mcLFS': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
+                         'mcTOP': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
+                         'divlp': f'{path}/data/langmuir_probe_signal_{sampling_freq}kHz'}
     
     if signal_name not in ['divlp', 'mc', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
             raise ValueError(f'{signal_name} is not a valid signal name. Please use one of the following: divlp, mc, h_alpha')
@@ -519,10 +521,7 @@ class Simple1DCNN(nn.Module):
     def forward(self, x):
         if len(x.size()) == 2:  # if the shape is [batch_size, window] corresponding to 1-channel
             x = x.unsqueeze(1)  # Now shape is [batch_size, 1, window]
-        else:
-            # if the shape is [batch_size, window, n] corresponding to n-channels
-            x = x.transpose(1, 2)  # Now shape is [batch_size, n, window]
-
+            
         #First Convolution Activation BatchNorm
         x = self.conv1(x)
         x = F.relu(x)
@@ -554,7 +553,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     since = time.time()
 
 
-    torch.save(model.state_dict(), chkpt_path)
     best_acc = 0.0
 
     total_loss = {'train': 0.0, 'val': 0.0}
@@ -599,10 +597,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] = 0.95*(total_loss['train']) + loss.item()
+                        total_loss['train'] += loss.item()
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] = 0.95*(total_loss['val']) + loss.item()                        
+                        total_loss['val'] += loss.item()                        
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)

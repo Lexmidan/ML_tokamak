@@ -17,7 +17,7 @@ cdb = client.CDBClient()
 path = Path('/compass/Shared/Users/bogdanov/vyzkumny_ukol')
 os.chdir(path)
 
-def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
+def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023', sampling_freq=300):
     #dirs where to save the csv files
     directories = {'h_alpha':'data/h_alpha_signal',  
                     'divlp':'data/langmuir_probe_signal'}
@@ -63,7 +63,7 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
 
         for signal, signal_name in zip([h_alpha_signal, divlp_signal], ['h_alpha', 'divlp']):
             # Decimate signal to 300 kHz
-            signal = dsp.decimate(signal, target_fs=300) 
+            signal = dsp.decimate(signal, target_fs=sampling_freq) 
 
             #Scale signal using RobustScaler
             signal = scaler(signal)
@@ -86,10 +86,10 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023'):
                 signal_df.loc[elm[0]:elm[1], 'mode'] = 'ELM'
 
             # Save data
-            signal_df.to_csv(f'{directories[signal_name]}/shot_{shot}.csv')
+            signal_df.to_csv(f'{directories[signal_name]}_{sampling_freq}kHz/shot_{shot}.csv')
 
 
-def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023'):
+def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023', sampling_freq=300):
     
     #RobustScaler for scaling the signals
     scaler = imgs.RobustScalerNumpy().fit_transform
@@ -132,7 +132,7 @@ def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023')
             t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data})
 
         # Decimate signal to 300 kHz and scale it using RobustScaler
-        mcHFS_signal, mcLFS_signal, mcDIV_signal, mcTOP_signal = map(lambda signal: scaler(dsp.decimate(signal, target_fs=300)),
+        mcHFS_signal, mcLFS_signal, mcDIV_signal, mcTOP_signal = map(lambda signal: scaler(dsp.decimate(signal, target_fs=sampling_freq)),
                                                              [mcHFS_signal, mcLFS_signal, mcDIV_signal, mcTOP_signal])
 
         # Create a DataFrame from the decimated signal xarray
@@ -158,14 +158,16 @@ def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023')
             signal_df.loc[elm[0]:elm[1], 'mode'] = 'ELM'
 
         # Save data
-        signal_df.to_csv(f'data/mirnov_coil_signal/shot_{shot}.csv')
+        signal_df.to_csv(f'data/mirnov_coil_signal_{sampling_freq}kHz/shot_{shot}.csv')
 
 if __name__ == "__main__":
     shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
     shot_for_alt = shot_usage[shot_usage['used_for_alt']]
     shot_numbers = shot_for_alt['shot']
     
-    process_data_for_alt_models(shot_numbers, variant='seidl_2023')
-    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023')
+    process_data_for_alt_models(shot_numbers, variant='seidl_2023', sampling_freq=150)
+    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023', sampling_freq=150)
     
+    process_data_for_alt_models(shot_numbers, variant='seidl_2023', sampling_freq=30)
+    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023', sampling_freq=30)
     

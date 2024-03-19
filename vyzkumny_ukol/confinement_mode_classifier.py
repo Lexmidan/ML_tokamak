@@ -111,12 +111,15 @@ class TwoImagesDataset(Dataset):
         self.std = std
         self.option = second_img_opt
         if augmentation:
-            self.transformations = transforms.Compose([
-            transforms.RandomVerticalFlip(),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
-            AddRandomNoise(0., 0.05),  # Add random noise
-            ])
+            if np.random.rand() > 0.67: #1/3 of the time we augment the data
+                self.transformations = transforms.Compose([
+                transforms.RandomVerticalFlip(),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
+                AddRandomNoise(0., 0.05),  # Add random noise
+                ])
+            else:
+                self.transformations = transforms.Lambda(lambda x: x) #Identity transformation
         else:
             self.transformations = transforms.Lambda(lambda x: x) #Identity transformation
     def __len__(self):
@@ -204,6 +207,7 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
     for shot in shots:
         df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         df['shot'] = shot
+        df = df.iloc[:-100] #Drop last 100 rows, because sometimes RIS cameras don't end at the same time :C
         shot_df = pd.concat([shot_df, df], axis=0)
 
 
@@ -219,7 +223,9 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
         shot_df['filename'] = shot_df['filename'].str.replace('RIS1', 'RIS2')
 
     if ris_option == 'both':
-        df_ris2 = shot_df.copy()
+        shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv', header=0)
+        shots_for_ris2 = shot_usage[shot_usage['used_for_ris2']]['shot'].to_list()
+        df_ris2 = shot_df[shot_df['shot'].isin(shots_for_ris2)].copy()
         df_ris2['filename'] = df_ris2['filename'].str.replace('RIS1', 'RIS2')
         shot_df = pd.concat([shot_df, df_ris2], axis=0)
         shot_df = shot_df.reset_index(drop=True)
@@ -277,12 +283,12 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32,
         dataloader = DataLoader(dataset, 
                                 batch_size=batch_size, 
                                 sampler=sampler, 
-                                num_workers = num_workers)
+                                num_workers=num_workers)
     else: 
         dataloader = DataLoader(dataset, 
                                 batch_size=batch_size, 
                                 shuffle=shuffle, 
-                                num_workers = num_workers)
+                                num_workers=num_workers)
 
     return dataloader
 
@@ -413,10 +419,10 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] = 0.95*(total_loss['train']) + loss.item()
+                        total_loss['train'] = 0.995*(total_loss['train']) + loss.item()
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] = 0.95*(total_loss['val']) + loss.item()
+                        total_loss['val'] = 0.995*(total_loss['val']) + loss.item()
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0) #Why multiply by inputs.size(0)?
@@ -475,8 +481,6 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 torch.save(model.state_dict(), chkpt_path)
 
         time_elapsed = time.time() - since
-        # load best model weights
-        model.load_state_dict(torch.load(chkpt_path))
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'Best val Acc: {best_acc:4f}')
     return model
@@ -698,7 +702,7 @@ def matplotlib_figure_to_pil_image(fig):
     return image
 
 
-def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
+def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
     """
     Calculate the PR (Precision-Recall) and ROC (Receiver Operating Characteristic) curves and AUC (Area Under the Curve)
     for a binary and ternary classification problem.
@@ -723,21 +727,19 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
         total_positives = true_positives[-1]
         total_negatives = false_positives[-1]
 
-        # Precision and Recall calculations
+        # Precision and Recall and false positive rate calculations
         precision = true_positives / (true_positives + false_positives)
         recall = true_positives / total_positives
-
         fpr = false_positives / total_negatives
-        tpr = true_positives / total_positives
 
         # Calculate AUC
         auc_pr = calculate_auc(recall, precision)
-        auc_roc = calculate_auc(fpr, tpr)
+        auc_roc = calculate_auc(fpr, recall)
 
-        return precision, recall, tpr, fpr, auc_roc, auc_pr, sorted_pred
+        return precision, recall, fpr, auc_roc, auc_pr, sorted_pred
 
     if task == 'binary':
-        precision, recall, tpr, fpr, auc_roc, auc_pr, sorted_pred =  binary_pr_roc_auc(y_true, y_pred)
+        precision, recall, fpr, auc_roc, auc_pr, sorted_pred = binary_pr_roc_auc(y_true, y_pred)
 
         # Create the PR and ROC curves
         fig_pr, ax_pr = plt.subplots()
@@ -749,7 +751,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
         ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
 
         fig_roc, ax_roc = plt.subplots()
-        scatter_roc = ax_roc.scatter(fpr, tpr, c=sorted_pred, cmap=cmap, s=2)
+        scatter_roc = ax_roc.scatter(fpr, recall, c=sorted_pred, cmap=cmap, s=2)
         ax_roc.set_xlim(-0.07, 1.07)
         ax_roc.set_ylim(-0.07, 1.07)
         ax_roc.set_xlabel("False Positive Rate")
@@ -768,11 +770,11 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
     elif task == 'ternary':
         cmaps = ['autumn', 'winter', 'cool']
         # Create the PR and ROC curves for L-mode
-        L_precision, L_recall, L_tpr, L_fpr, L_auc_roc, L_auc_pr, L_sorted_pred =  binary_pr_roc_auc((y_true==0).long(), y_pred[:,0])
+        L_precision, L_recall, L_fpr, L_auc_roc, L_auc_pr, L_sorted_pred =  binary_pr_roc_auc((y_true==0).long(), y_pred[:,0])
         # Create the PR and ROC curves for H-mode
-        H_precision, H_recall, H_tpr, H_fpr, H_auc_roc, H_auc_pr, H_sorted_pred =  binary_pr_roc_auc((y_true==1).long(), y_pred[:,1])
+        H_precision, H_recall, H_fpr, H_auc_roc, H_auc_pr, H_sorted_pred =  binary_pr_roc_auc((y_true==1).long(), y_pred[:,1])
         # Create the PR and ROC curves for ELM
-        E_precision, E_recall, E_tpr, E_fpr, E_auc_roc, E_auc_pr, E_sorted_pred =  binary_pr_roc_auc((y_true==2).long(), y_pred[:,2])
+        E_precision, E_recall, E_fpr, E_auc_roc, E_auc_pr, E_sorted_pred =  binary_pr_roc_auc((y_true==2).long(), y_pred[:,2])
 
         # Create the PR image
         fig_pr, ax_pr = plt.subplots(figsize=(10, 5))
@@ -797,9 +799,9 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task = 'binary'):
 
         #Create the ROC image
         fig_roc, ax_roc = plt.subplots(figsize=(10, 5))
-        scatter_roc_L = ax_roc.scatter(L_fpr, L_tpr, c=L_sorted_pred, cmap=cmaps[0], s=2)
-        scatter_roc_H = ax_roc.scatter(H_fpr, H_tpr, c=H_sorted_pred, cmap=cmaps[1], s=2)
-        scatter_roc_E = ax_roc.scatter(E_fpr, E_tpr, c=E_sorted_pred, cmap=cmaps[2], s=2)
+        scatter_roc_L = ax_roc.scatter(L_fpr, L_recall, c=L_sorted_pred, cmap=cmaps[0], s=2)
+        scatter_roc_H = ax_roc.scatter(H_fpr, H_recall, c=H_sorted_pred, cmap=cmaps[1], s=2)
+        scatter_roc_E = ax_roc.scatter(E_fpr, E_recall, c=E_sorted_pred, cmap=cmaps[2], s=2)
         ax_roc.set_xlim(-0.07, 1.07)
         ax_roc.set_ylim(-0.07, 1.07)
         ax_roc.set_xlabel("False Positive Rate", fontsize=16)
