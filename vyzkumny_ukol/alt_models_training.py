@@ -83,7 +83,8 @@ def train_and_test_alt_model(signal_name = 'divlp',
     model_path = Path(f'{path}/runs/{timestamp}/model.pt')
 
     # Create model
-    untrained_model = am.select_model_architecture(architecture=architecture, window=signal_window, num_classes=3, in_channels=in_channels)
+    untrained_model = am.select_model_architecture(architecture=architecture, window=signal_window, 
+                                                   num_classes=3, in_channels=in_channels)
     untrained_model = untrained_model.to(device)
 
     # Write model graph to tensorboard
@@ -129,9 +130,12 @@ def train_and_test_alt_model(signal_name = 'divlp',
     am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
-                        'F1 metric on test_dataset':metrics['f1'], 
-                        'Precision on test_dataset':metrics['precision'], 
-                        'Recall on test_dataset':metrics['recall']}
+                        'F1 metric on test_dataset':metrics['f1'].tolist(), 
+                        'Precision on test_dataset':metrics['precision'].tolist(), 
+                        'Recall on test_dataset':metrics['recall'].tolist(),
+                        'PR AUC L-mode on test_dataset':metrics['pr_roc_curves']['pr_auc'][0].tolist(),
+                        'PR AUC H-mode on test_dataset':metrics['pr_roc_curves']['pr_auc'][1].tolist(),
+                        'PR AUC ELM on test_dataset':metrics['pr_roc_curves']['pr_auc'][2].tolist()}
 
     writer.add_hparams(hyperparameters, one_digit_metrics)
     writer.close()
@@ -139,10 +143,10 @@ def train_and_test_alt_model(signal_name = 'divlp',
     # Save hyperparameters and metrics to a JSON file
     for key in ['shots_for_testing', 'shots_for_validation', 'shots_for_training']:
         hyperparameters[key] = hyperparameters[key].tolist()  # Convert tensors to lists
-    all_hparams = {**hyperparameters, **metrics}
+    all_hparams = {**hyperparameters, **one_digit_metrics}
     # Convert to JSON
     json_str = json.dumps(all_hparams, indent=4)
-    with open(f'{path}/runs/{timestamp}_last_fc/hparams.json', 'w') as f:
+    with open(f'{path}/runs/{timestamp}/hparams.json', 'w') as f:
         f.write(json_str)
 
 if __name__ == "__main__":

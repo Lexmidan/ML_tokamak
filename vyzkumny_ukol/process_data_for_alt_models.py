@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import sys
-# sys.path.append('/compass/Shared/Common/IT/projects/user-libraries/python/cdb_extras/stable/cdb_extras')
+sys.path.append('/compass/Shared/Common/IT/projects/user-libraries/python/cdb_extras/stable/cdb_extras/')
 # import xarray_support as cdbxr   # načítání dat z databáze COMPASSu
 from cdb_extras import xarray_support as cdbxr   # načítání dat z databáze COMPASSu
 from pyCDB import client
@@ -85,6 +85,16 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023', sampling_f
             for elm in t_ELM.values:
                 signal_df.loc[elm[0]:elm[1], 'mode'] = 'ELM'
 
+        if len(t_ELM_peak.data.shape)!=0:
+            for elm in t_ELM_peak.data:
+                closest_idx = signal_df.index.get_indexer([elm], method='nearest')[0]
+                # Update the 'mode' column for the closest index
+                signal_df.iloc[closest_idx, signal_df.columns.get_loc('mode')] = 'ELM-peak'
+        else:
+            closest_idx = signal_df.index.get_indexer([float(t_ELM_peak.data)], method='nearest')[0]
+            # Update the 'mode' column for the closest index
+            signal_df.iloc[closest_idx, signal_df.columns.get_loc('mode')] = 'ELM-peak'
+
             # Save data
             signal_df.to_csv(f'{directories[signal_name]}_{sampling_freq}kHz/shot_{shot}.csv')
 
@@ -157,6 +167,16 @@ def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023',
         for elm in t_ELM.values:
             signal_df.loc[elm[0]:elm[1], 'mode'] = 'ELM'
 
+        if len(t_ELM_peak.data.shape)!=0:
+            for elm in t_ELM_peak.data:
+                closest_idx = signal_df.index.get_indexer([elm], method='nearest')[0]
+                # Update the 'mode' column for the closest index
+                signal_df.iloc[closest_idx, signal_df.columns.get_loc('mode')] = 'ELM-peak'
+        else:
+            closest_idx = signal_df.index.get_indexer([float(t_ELM_peak.data)], method='nearest')[0]
+            # Update the 'mode' column for the closest index
+            signal_df.iloc[closest_idx, signal_df.columns.get_loc('mode')] = 'ELM-peak'
+
         # Save data
         signal_df.to_csv(f'data/mirnov_coil_signal_{sampling_freq}kHz/shot_{shot}.csv')
 
@@ -165,9 +185,9 @@ if __name__ == "__main__":
     shot_for_alt = shot_usage[shot_usage['used_for_alt']]
     shot_numbers = shot_for_alt['shot']
     
+    process_data_for_alt_models(shot_numbers, variant='seidl_2023', sampling_freq=300)
+
     process_data_for_alt_models(shot_numbers, variant='seidl_2023', sampling_freq=150)
-    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023', sampling_freq=150)
     
     process_data_for_alt_models(shot_numbers, variant='seidl_2023', sampling_freq=30)
-    process_data_for_multiple_mirnov_coils(shot_numbers, variant='seidl_2023', sampling_freq=30)
     

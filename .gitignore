@@ -1,9 +1,10 @@
 ############Those are mine
-/vyzkumny_ukol/ConfusionMatrix 3 epochs of training 26_11_2023.svg
 /vyzkumny_ukol/preds_vs_actuals
 vyzkumny_ukol/process new imgs.ipynb
-/vyzkumny_ukol/process_data_for_alt_models.ipynb
+*process_data_for_alt_models.ipynb
+*sandbox*
 /gamma_spice_sim
+/gamma_spice_sim*
 /data 
 /saved_models
 cross_validation_of_RIS1_model

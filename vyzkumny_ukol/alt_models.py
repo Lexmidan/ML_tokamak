@@ -321,7 +321,7 @@ class Reshape(nn.Module):
 
 def split_df(df, shots, shots_for_training, shots_for_testing, 
              shots_for_validation, signal_name, use_ELMS=True, 
-             path=os.getcwd(), sampling_freq=300):
+             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=True):
 
     """
     Splits the dataframe into train, test and validation sets. 
@@ -343,13 +343,60 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
     for shot in shots:
         df = pd.read_csv(f'{signal_paths_dict[signal_name]}/shot_{shot}.csv')
         df['shot'] = shot
+        df['soft_label'] = df.apply(lambda x: [0, 1, 0] if x['mode'] == 'H-mode' else [1, 0, 0], axis=1)
+        # Load the dataset
+        if exponential_elm_decay:
+            #Pre peak and post peak time
+            pre_time = 1
+            post_time = 2
+            if df['mode'].str.contains('ELM-peak').any():
+                for elm_peak in df[df['mode'] == 'ELM-peak']['time']:
+                    
+                    # Pre-ELM probabilities
+                    pre_indices = df.loc[df['time'].between(elm_peak-pre_time, elm_peak)].index
+                    if not pre_indices.empty:
+                        pre_elm_prob = np.exp(-5 * np.linspace(pre_time, 0, len(pre_indices)))
+                        for i, prob in zip(pre_indices, pre_elm_prob):
+                            df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][2]])]
+                    
+                    # Post-ELM probabilities
+                    post_indices = df.loc[df['time'].between(elm_peak, elm_peak+post_time)].index
+                    if not post_indices.empty:
+                        post_elm_prob = np.exp(-3 * np.linspace(0, post_time, len(post_indices)))
+                        for i, prob in zip(post_indices, post_elm_prob):
+                            df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][2]])]
+
+
+            #     # Identify ELM-peak events and their times
+            #     elm_peak_times = df[df['mode'] == 'ELM-peak']['time']
+
+            #     # Calculate the minimum time difference from ELM-peak for all rows
+            #     min_time_diff = df['time'].apply(lambda row_time: np.min(np.abs(elm_peak_times - row_time)))
+
+            #     # Apply exponential decay to the time difference to calculate the probability
+            #     df['prob'] = np.exp(-3 * min_time_diff)
+            # else:
+            #     df['prob'] = 0
+
+            # # One-hot encoding mapping for modes
+            # mode_to_one_hot = {
+            #     'L-mode': [1., 0, 0],
+            #     'H-mode': [0, 0., 0],
+            #     'ELM': [0, 0, .0],
+            #     'ELM-peak': [0, 0, .0]
+            # }
+            # df['probs']=df.apply(lambda x: [apply_mode_prob_adjusted(x, mode_to_one_hot=mode_to_one_hot)], axis=1, result_type='expand')
+                     
+
         shot_df = pd.concat([shot_df, df], axis=0)
 
     #Replace the mode with a number
     df_mode = shot_df['mode'].copy()
     df_mode[shot_df['mode']=='L-mode'] = 0
     df_mode[shot_df['mode']=='H-mode'] = 1
-    df_mode[shot_df['mode']=='ELM'] = 2 if use_ELMS else 1
+    df_mode[shot_df['mode'].isin(['ELM', 'ELM-peak'])] = 2 if use_ELMS else 1
     shot_df['mode'] = df_mode
     shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
@@ -359,6 +406,13 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
 
     return shot_df, test_df, val_df, train_df
 
+# Apply probabilities to one-hot encoding for modes
+def apply_mode_prob_adjusted(row, mode_to_one_hot):
+    one_hot = np.array(mode_to_one_hot[row['mode']])
+    # Apply probability only to the last element (ELM/ELM-peak)
+    one_hot[2] += row['prob'] #Probability of ELM
+    one_hot[1] += 0 if row['mode'] == 'L-mode' else 1 - row['prob'] #Probability of H-mode
+    return one_hot
 
 class SignalDataset(Dataset):
     '''
@@ -394,7 +448,7 @@ class SignalDataset(Dataset):
         label = self.df.iloc[idx]['mode']
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
-        return {'label': label, 'time': time, f'{self.signal_name}': signal_window, 'shot': shot_num}
+        return {'label': label, 'time': time, f'{self.signal_name}': signal_window.astype(float), 'shot': shot_num.astype(int)}
 
 
 class MultipleMirnovCoilsDataset(Dataset):
@@ -423,7 +477,8 @@ class MultipleMirnovCoilsDataset(Dataset):
             signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : idx+self.dpoints_in_future]
                                          [['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
         signal_window = signal_window.transpose(0, 1) #so batch shape corresponds to [batch_size, n_channels, window]
-        label = self.df.iloc[idx]['mode']
+
+        label = torch.tensor(self.df.iloc[idx]['soft_label'], dtype=torch.float) 
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
         return {'label': label, 'time': time, 'mc': signal_window, 'shot': shot_num}
@@ -457,6 +512,7 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
 
     #Balance the data
     if balance_data:
+        df['mode'] = df['mode'].map(lambda x: 'ELM' if x =='ELM-peak' else x)
         mode_weight = (1/df['mode'].value_counts()).values
         sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
         sampler = WeightedRandomSampler(sampler_weights, len(df), replacement=True)
@@ -550,8 +606,8 @@ class Simple1DCNN(nn.Module):
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
                  writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
                  chkpt_path=os.getcwd(), signal_name='divlp', device = torch.device("cuda:0")):
-    since = time.time()
 
+    since = time.time()
 
     best_acc = 0.0
 
@@ -577,7 +633,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             for batch in tqdm(dataloaders[phase]):
                 inputs = batch[f'{signal_name}'].to(device).float()
                 labels = batch['label'].to(device)
-                
+                _, ground_truth = torch.max(labels, axis=1)
                 running_batch += 1
                 
                 # zero the parameter gradients
@@ -604,7 +660,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data) #How many correct answers
+                running_corrects += torch.sum(preds == ground_truth.data) #How many correct answers
                 
                 
                 #tensorboard part
@@ -618,16 +674,16 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
-                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, labels),
+                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, ground_truth),
                                     epoch * len(dataloaders[phase]) + running_batch)
                     
                     #Precision recall
                     writer.add_scalar(f'{phase}ing macro Precision', 
-                                        MulticlassPrecision(num_classes=3).to(device)(preds, labels),
+                                        MulticlassPrecision(num_classes=3).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
                     writer.add_scalar(f'{phase}ing macro Recall', 
-                                        MulticlassRecall(num_classes=3).to(device)(preds, labels),
+                                        MulticlassRecall(num_classes=3).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
             if phase == 'train':
@@ -652,6 +708,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'Best val Acc: {best_acc:4f}')
     return model
+
 
 def test_model(run_path, 
                model, test_dataloader: DataLoader,
@@ -683,12 +740,12 @@ def test_model(run_path,
         batch_index +=1
         outputs, y_hat, confidence = cmc.images_to_probs(model, batch[f'{signal_name}'].to(device).float())
         y_hat = torch.tensor(y_hat)
-        y_df = torch.cat((y_df.int(), batch['label']), dim=0)
+        y_df = torch.cat((y_df.int(), batch['label'].max(axis=1)[1]), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
         shot_numbers = batch['shot']
 
         pred = pd.DataFrame({'shot': shot_numbers, 'prediction': y_hat.data, 
-                            'label': batch['label'].data, 'time':batch['time'], 
+                            'label': batch['label'].data.max(axis=1)[1], 'time':batch['time'], 
                             'confidence': confidence,'L_logit': outputs[:,0].cpu(), 
                             'H_logit': outputs[:,1].cpu(), 'ELM_logit': outputs[:,2].cpu()})
 
@@ -771,7 +828,7 @@ def test_model(run_path,
         return {'prediction_df': preds}
     
 
-def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWriter = None):
+def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWriter = None, save_metrics_imgs: bool = True):
     '''
     Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
     Returns metrics of model for each shot separately
@@ -800,29 +857,6 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
         confusion_matrix_metric.update(preds_tensor, labels_tensor)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
         
-
-        #f1 score
-        f1 = F1Score(task="multiclass", num_classes=3)(preds_tensor, labels_tensor)
-
-        #Precision
-        precision = MulticlassPrecision(num_classes=3)(preds_tensor, labels_tensor)
-
-        #recall
-        recall = MulticlassRecall(num_classes=3)(preds_tensor, labels_tensor)
-
-        #accuracy
-        accuracy = len(pred_for_shot[pred_for_shot['prediction']==pred_for_shot['label']])/len(pred_for_shot)
-
-        textstr = '\n'.join((
-            f'shot {shot}',
-            r'threshhold = 0.5:',
-            r'f1=%.2f' % (f1.item(), ),
-            r'precision=%.2f' % (precision.item(), ),
-            r'recall=%.2f' % (recall.item(), ),
-            r'accuracy=%.2f' % (accuracy, )))
-        # these are matplotlib.patch.Patch properties
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
         conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
         conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
@@ -835,7 +869,6 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
                           len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
                           s=5, alpha=1, label='ELM Truth', color='royalblue')
     
-        conf_time_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
         conf_time_ax.set_xlabel('t [ms]')
         conf_time_ax.set_ylabel('Confidence')
 
@@ -857,7 +890,8 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
         combined_image.paste(conf_matrix_img, (time_confidence_img.width, 0))
 
         # Save the combined image
-        combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
+        if save_metrics_imgs:
+            combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
 
                 # Save the images to tensorboard
         if writer:
@@ -946,3 +980,36 @@ def select_model_architecture(architecture: str, num_classes: int, window: int, 
     else:
         raise ValueError(f'{architecture} is not a valid architecture. Please use one of the following: InceptionTime, Simple1DCNN')
     return model
+
+class RobustScalerNumpy:
+    def __init__(self):
+        self.median = None
+        self.iqr = None
+
+    def fit(self, X):
+        """
+        Compute the median and IQR of X to later use for scaling.
+        X should be a NumPy array.
+        """
+        self.median = np.median(X, axis=0)
+        q1 = np.percentile(X, 25, axis=0)
+        q3 = np.percentile(X, 75, axis=0)
+        self.iqr = q3 - q1
+
+    def transform(self, X):
+        """
+        Scale features of X according to the median and IQR.
+        """
+        if self.median is None or self.iqr is None:
+            raise RuntimeError("Must fit the scaler before transforming data.")
+
+        # Avoid division by zero
+        iqr_nonzero = np.where(self.iqr == 0, 1, self.iqr)
+        return (X - self.median) / iqr_nonzero
+
+    def fit_transform(self, X):
+        """
+        Fit to data, then transform it.
+        """
+        self.fit(X)
+        return self.transform(X)

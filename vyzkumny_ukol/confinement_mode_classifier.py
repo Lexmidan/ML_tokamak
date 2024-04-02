@@ -113,8 +113,6 @@ class TwoImagesDataset(Dataset):
         if augmentation:
             if np.random.rand() > 0.67: #1/3 of the time we augment the data
                 self.transformations = transforms.Compose([
-                transforms.RandomVerticalFlip(),
-                transforms.RandomHorizontalFlip(),
                 transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
                 AddRandomNoise(0., 0.05),  # Add random noise
                 ])

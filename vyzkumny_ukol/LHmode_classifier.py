@@ -131,9 +131,9 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
-                        'F1 metric on test_dataset':metrics['f1'], 
-                        'Precision on test_dataset':metrics['precision'], 
-                        'Recall on test_dataset':metrics['recall']}
+                        'F1 metric on test_dataset':metrics['f1'].tolist(), 
+                        'Precision on test_dataset':metrics['precision'].tolist(), 
+                        'Recall on test_dataset':metrics['recall'].tolist()}
 
     writer.add_hparams(hyperparameters, one_digit_metrics)
     writer.close()
@@ -141,7 +141,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     # Save hyperparameters and metrics to a JSON file
     for key in ['shots_for_testing', 'shots_for_validation', 'shots_for_training']:
         hyperparameters[key] = hyperparameters[key].tolist()  # Convert tensors to lists
-    all_hparams = {**hyperparameters, **metrics}
+    all_hparams = {**hyperparameters, **one_digit_metrics}
     # Convert to JSON
     json_str = json.dumps(all_hparams, indent=4)
     with open(f'{path}/runs/{timestamp}_last_fc/hparams.json', 'w') as f:
@@ -193,9 +193,9 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
     
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
-                        'F1 metric on test_dataset':metrics['f1'], 
-                        'Precision on test_dataset':metrics['precision'], 
-                        'Recall on test_dataset':metrics['recall']}
+                        'F1 metric on test_dataset':metrics['f1'].tolist(), 
+                        'Precision on test_dataset':metrics['precision'].tolist(), 
+                        'Recall on test_dataset':metrics['recall'].tolist()}
 
     writer.add_hparams(hyperparameters, one_digit_metrics)
     writer.close()
@@ -203,7 +203,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     # Save hyperparameters and metrics to a JSON file
     for key in ['shots_for_testing', 'shots_for_validation', 'shots_for_training']:
         hyperparameters[key] = hyperparameters[key].tolist()  # Convert tensors to lists
-    all_hparams = {**hyperparameters, **metrics}
+    all_hparams = {**hyperparameters, **one_digit_metrics}
     # Convert to JSON
     json_str = json.dumps(all_hparams, indent=4)
     with open(f'{path}/runs/{timestamp}_all_layers/hparams.json', 'w') as f:
