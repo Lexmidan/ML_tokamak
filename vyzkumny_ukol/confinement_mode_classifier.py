@@ -73,35 +73,6 @@ class ImageDataset(Dataset):
         return {'img': augmented_image,'label': label, 'path': img_path, 'time': time}
 
 
-class HalphaDataset(Dataset):
-    '''
-        Parameters:
-            annotations (DataFrame): The DataFrame containing annotations for the dataset.
-            window (int): The size of the time window for fetching sequential data.
-
-    '''
-
-    def __init__(self, annotations, h_alpha_window, img_dir):
-        self.img_labels = annotations #pd.read_csv(annotations_file)
-        self.h_alpha_window = h_alpha_window
-        self.img_dir = img_dir
-
-    def __len__(self):
-        return len(self.img_labels)
-
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.img_dir, self.img_labels.loc[idx, 'filename'])
-        h_window = torch.tensor([])
-        
-        if idx-self.h_alpha_window < 0: 
-            h_window = torch.tensor(self.h_alpha_window*[self.img_labels.iloc[idx]['h_alpha']])
-        else:
-            h_window = torch.tensor(self.img_labels.iloc[idx-self.h_alpha_window:idx]['h_alpha'].to_numpy())
-
-        label = self.img_labels.iloc[idx]['mode']
-        time = self.img_labels.iloc[idx]['time']
-        return {'label': label, 'time': time, 'h_alpha': h_window, 'path':img_path}
-
 
 class TwoImagesDataset(Dataset):
     def __init__(self, annotations, img_dir, mean, std, second_img_opt: str = 'RIS2', augmentation = False):
@@ -349,26 +320,11 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
                  writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
-                 chkpt_path=os.getcwd(), device = torch.device("cuda:0")):
-    '''
-    Trains the model
+                 chkpt_path=os.getcwd(), signal_name='img', device = torch.device("cuda:0"),
+                 return_best_model = True):
 
-    Args:
-        model: The neural network model to be trained.
-        criterion: The loss function used for training.
-        optimizer: The optimizer used for updating the model's parameters.
-        scheduler: The learning rate scheduler.
-        dataloaders: A dictionary containing train and validation dataloaders.
-        writer: The tensorboard writer for logging.
-        dataset_sizes: A dictionary containing the lengths of train and validation datasets.
-        num_epochs: The number of epochs to train the model.
-        chkpt_path: The path to save the best model checkpoint.
-        device: The device to run the training on.
-
-    Returns:
-        The trained model.
-    '''
     since = time.time()
+
     best_acc = 0.0
 
     total_loss = {'train': 0.0, 'val': 0.0}
@@ -389,15 +345,16 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
             running_corrects = 0
             running_batch = 0
 
-            # Save parameters before changing them. We will use this to calculate the average parameter change
-            #prev_params = {name: param.clone().detach() for name, param in model.named_parameters()}
-
             # Iterate over data.
             for batch in tqdm(dataloaders[phase]):
-                
-                inputs = batch['img'].to(device).float() 
+                inputs = batch[signal_name].to(device).float()
                 labels = batch['label'].to(device)
-                
+
+                if len(labels.size()) > 1:
+                    _, ground_truth = torch.max(labels, axis=1)
+                else: 
+                    ground_truth = labels
+
                 running_batch += 1
                 
                 # zero the parameter gradients
@@ -408,26 +365,27 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
                     #TODO: inputs.type. 
-                    _, preds = torch.max(outputs, 1)
+                    _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
                     loss = criterion(outputs, labels)
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
-                        loss.backward()   
+                        loss.backward()
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] = 0.995*(total_loss['train']) + loss.item()
+                        total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] = 0.995*(total_loss['val']) + loss.item()
+                        total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])                      
 
                 # statistics
-                running_loss += loss.item() * inputs.size(0) #Why multiply by inputs.size(0)?
-                running_corrects += torch.sum(preds == labels.data) #How many correct answers
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == ground_truth.data) #How many correct answers
                 
                 
                 #tensorboard part
+                
                 if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
                     # ...log the running loss
                     
@@ -437,31 +395,17 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
-                                    F1Score(task="multiclass", num_classes=2).to(device)(preds, labels),
+                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, ground_truth),
                                     epoch * len(dataloaders[phase]) + running_batch)
                     
                     #Precision recall
                     writer.add_scalar(f'{phase}ing macro Precision', 
-                                        MulticlassPrecision(num_classes=2).to(device)(preds, labels),
+                                        MulticlassPrecision(num_classes=3).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
                     writer.add_scalar(f'{phase}ing macro Recall', 
-                                        MulticlassRecall(num_classes=2).to(device)(preds, labels),
+                                        MulticlassRecall(num_classes=3).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
-                    
-                    # #Average parameter change
-                    # # After optimizer.step(), calculate the change
-                    # param_change_sum = 0
-                    # param_count = 0
-                    # for name, param in model.named_parameters():
-                    #     param_change = (param - prev_params[name]).abs().mean()
-                    #     param_change_sum += param_change.item()
-                    #     param_count += 1
-                    # avg_param_change = param_change_sum / param_count
-                    
-                    # # Log the average parameter change
-                    # writer.add_scalar('Average Parameter Change', avg_param_change, 
-                    #                   epoch * len(dataloaders[phase]) + running_batch)
                     
             if phase == 'train':
                 scheduler.step()
@@ -476,21 +420,24 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 writer.close()
                 if epoch_acc > best_acc:
                     best_acc = epoch_acc
-                torch.save(model.state_dict(), chkpt_path)
+                    torch.save(model.state_dict(), chkpt_path)
 
         time_elapsed = time.time() - since
+
+        # load best model weights
+    if return_best_model:
+        model.load_state_dict(torch.load(chkpt_path))
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'Best val Acc: {best_acc:4f}')
     return model
 
 
-####################### Test model #############
-
-def test_model(run_path, model: torchvision.models.resnet.ResNet, 
-               test_dataloader: DataLoader, max_batch: int = 0, 
-               return_metrics: bool = True, comment: str ='', 
-               device = torch.device("cuda:0"), writer: SummaryWriter = None):
-    """
+def test_model(run_path,
+               model, test_dataloader: DataLoader,
+               max_batch: int = 0, return_metrics: bool = True, num_classes: int = 3,
+               comment: str ='', signal_name: str = 'divlp', writer: SummaryWriter = None,
+               device = torch.device("cuda:0")):
+    '''
     Takes model and dataloader and returns figure with confusion matrix, 
     dataframe with predictions, F1 metric value, precision, recall and accuracy
 
@@ -506,54 +453,70 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
         recall: MulticlassRecall(num_classes=3)
         accuracy: (TP+TN)/(TP+TN+FN+FP)
         fig_confusion_matrix: MulticlassConfusionMatrix(num_classes=3)
-    """
-
+    '''
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
-    preds = pd.DataFrame(columns=['shot', 'prediction', 'label', 'time', 'confidence', 'L_logit', 'H_logit', 'ELM_logit'])
-    pattern = re.compile(r'RIS[12]_(\d+)_t=')
+    preds = pd.DataFrame([])
+    pattern = re.compile(r'RIS[12]_(\d+)_t=')        
     batch_index = 0 #iterator
     for batch in tqdm(test_dataloader, desc='Processing batches'):
         batch_index +=1
-        outputs, y_hat, confidence = images_to_probs(model, batch['img'].to(device).float())
+        outputs, y_hat, confidence = images_to_probs(model, batch[signal_name].to(device).float())
         y_hat = torch.tensor(y_hat)
-        y_df = torch.cat((y_df.int(), batch['label']), dim=0)
+        y_df = torch.cat((y_df.int(), batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1]), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
-        shot_numbers = [int(pattern.search(path).group(1)) for path in batch['path']]
+
+        if 'shot' not in batch.keys():
+            shot_numbers = [int(pattern.search(path).group(1)) for path in batch['path']]
+        else:
+            shot_numbers = batch['shot']
 
         pred = pd.DataFrame({'shot': shot_numbers, 'prediction': y_hat.data, 
-                            'label': batch['label'].data, 'time':batch['time'], 
+                            'label': batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1], 
+                            'time':batch['time'], 
                             'confidence': confidence,'L_logit': outputs[:,0].cpu(), 
                             'H_logit': outputs[:,1].cpu()})
+        
+        task = "binary" if num_classes==2 else "multiclass"
+        if num_classes==3:
+            pred['ELM_logit'] = outputs[:,2].cpu()
 
-        preds = pd.concat([preds, pred],axis=0, ignore_index=True)
+        preds = pd.concat([preds, pred], axis=0, ignore_index=True)
 
         if max_batch!=0 and batch_index>max_batch:
             break
+
     if return_metrics:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit', 'H_logit']].values), dim=1)
-        
-        # Confusion matrix
-        confusion_matrix_metric = ConfusionMatrix(task="binary", num_classes=2)
+        print('Processing metrics...')
+
+        if num_classes==3:
+            softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
+        else:
+            softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit']].values), dim=1)
+
+        #Confusion matrix
+        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=num_classes)
         confusion_matrix_metric.update(y_hat_df, y_df)
-        conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
+        conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
+        #F1
+        f1 = F1Score(task=task, num_classes=num_classes)(y_hat_df, y_df)
 
-        # F1
-        f1 = F1Score(task = 'binary', num_classes=2)(y_hat_df, y_df)
+        #Precision and recall
+        precision = MulticlassPrecision(num_classes=num_classes)(y_hat_df, y_df)
+        recall = MulticlassRecall(num_classes=num_classes)(y_hat_df, y_df)
 
-        # Precision and Recall
-        precision = BinaryPrecision()(y_hat_df, y_df)
-        recall = BinaryRecall()(y_hat_df, y_df)
+        #Precision_recall and ROC curves are generated using the pr_roc_auc()
+        pr_roc = pr_roc_auc(y_df, softmax_out, task="binary" if num_classes==2 else 'ternary')
+        pr_fig = pr_roc['pr_curve'][0]
+        roc_fig = pr_roc['roc_curve'][0]
+        roc_ax = pr_roc['roc_curve'][1]
 
-        # Precision-Recall curve
-        pr_roc = pr_roc_auc(y_df, softmax_out[:,1], task='binary')
+        #Accuracy
+        accuracy = len(preds[preds['prediction']==preds['label']])/len(preds)
 
-        # Accuracy
-        accuracy = len(preds[preds['prediction'] == preds['label']]) / len(preds)
-
-        
         textstr = '\n'.join((
-            r'for th == 0.5:',
+            f'Whole test dset',
+            r'threshhold = 0.5:',
             r'f1=%.2f' % (f1.item(), ),
             r'precision=%.2f' % (precision.item(), ),
             r'recall=%.2f' % (recall.item(), ),
@@ -562,20 +525,27 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         
         conf_matrix_ax.set_title(f'confusion matrix for whole test dset')
-
-        pr_roc['roc_curve'][1].text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
+        roc_ax.text(0.05, 0.3, textstr, fontsize=14, verticalalignment='bottom', bbox=props)
 
         # Open the saved images using Pillow
-        roc_img = matplotlib_figure_to_pil_image(pr_roc['roc_curve'][0])
+        roc_img = matplotlib_figure_to_pil_image(roc_fig)
+        roc_img = roc_img.crop([int(0.06*roc_img.width), 0, int(0.8*roc_img.width), roc_img.height])
+        pr_img = matplotlib_figure_to_pil_image(pr_fig)
+        pr_img = pr_img.crop([int(0.06*pr_img.width), 0, int(0.8*pr_img.width), pr_img.height])
         conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
-        pr_curve_img = matplotlib_figure_to_pil_image(pr_roc['pr_curve'][0])
-        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_curve_img.width + roc_img.width,\
-                                            conf_matrix_img.height))
+        
+        # Resize the images to have the same height
+        new_conf_width = int(conf_matrix_img.width/conf_matrix_img.height * pr_img.height)
+        conf_matrix_img = conf_matrix_img.resize((new_conf_width, pr_img.height))
+
+        # Create a new image with a white background
+        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_img.width + roc_img.width,\
+                                            roc_img.height))
 
         # Paste the saved images into the combined image
         combined_image.paste(conf_matrix_img, (0, 0))
         combined_image.paste(roc_img, (conf_matrix_img.width, 0))
-        combined_image.paste(pr_curve_img, (roc_img.width+conf_matrix_img.width, 0))
+        combined_image.paste(pr_img, (roc_img.width+conf_matrix_img.width, 0))
         
         # Save the combined image
         combined_image.save(f'{run_path}/metrics_for_whole_test_dset_{comment}.png')
@@ -584,16 +554,18 @@ def test_model(run_path, model: torchvision.models.resnet.ResNet,
         if writer:
             combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
             writer.add_image('metrics_for_whole_test_dset', combined_image_tensor)
-                
+
         return {'prediction_df': preds, 'confusion_matrix': (conf_matrix_fig, conf_matrix_ax), 'f1': f1,
-                'precision': precision, 'recall': recall, 'accuracy': accuracy,
-                'PR_ROC_AUC': pr_roc}
+                'precision': precision, 'recall': recall, 'accuracy': accuracy, 'pr_roc_curves': pr_roc}
+                
     else:
         return {'prediction_df': preds}
     
 
-
-def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWriter=None):
+def per_shot_test(path, shots: list, results_df: pd.DataFrame, 
+                  writer: SummaryWriter = None, 
+                  save_metrics_imgs: bool = True, 
+                  num_classes: int = 3):
     '''
     Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
     Returns metrics of model for each shot separately
@@ -612,40 +584,42 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
 
     for shot in tqdm(shots):
         pred_for_shot = results_df[results_df['shot']==shot]
-        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit']].values), dim=1)
+        
+        if num_classes==3:
+            softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
+        else:
+            softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit']].values), dim=1)
 
-        y_hat_df = torch.tensor(pred_for_shot['prediction'].values.astype(float))
-        y_df = torch.tensor(pred_for_shot['label'].values.astype(int))
+        preds_tensor = torch.tensor(pred_for_shot['prediction'].values.astype(float))
+        labels_tensor = torch.tensor(pred_for_shot['label'].values.astype(int))
         
         #Confusion matrix
-        confusion_matrix_metric = ConfusionMatrix(task="binary", num_classes=2)
-        confusion_matrix_metric.update(y_hat_df, y_df)
+        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
+        confusion_matrix_metric.update(preds_tensor, labels_tensor)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
-
-
+        
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
         conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
+        
 
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                           len(pred_for_shot[pred_for_shot['label']==1])*[1], 
-                          s=2, alpha=1, label='H-mode Truth', color='maroon')
-
-
+                          s=5, alpha=1, label='H-mode Truth', color='maroon')
+        
+        if num_classes==3:
+            conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
+            conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
+                            len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
+                            s=5, alpha=1, label='ELM Truth', color='royalblue')
+    
         conf_time_ax.set_xlabel('t [ms]')
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         conf_time_ax.set_ylabel('Confidence')
-
-        # Add grid to the plot
-        conf_time_ax.grid(True)
-
 
         plt.title(f'shot {shot}')
         conf_time_ax.legend()
-        
 
         conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
         conf_matrix_fig.set_figheight(conf_time_fig.get_size_inches()[1])
-
 
         # Open the saved images using Pillow
         time_confidence_img = matplotlib_figure_to_pil_image(conf_time_fig)
@@ -657,16 +631,18 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame, writer: SummaryWr
         # Paste the saved images into the combined image
         combined_image.paste(time_confidence_img, (0, 0))
         combined_image.paste(conf_matrix_img, (time_confidence_img.width, 0))
-        
-        # Save the combined image
-        combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
 
-        # Save the images to tensorboard
+        # Save the combined image
+        if save_metrics_imgs:
+            combined_image.save(f'{path}/metrics_for_shot_{shot}.png')
+
+                # Save the images to tensorboard
         if writer:
             combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
             writer.add_image(f'metrics_for_test_shot_{shot}', combined_image_tensor)
 
     return f'{path}/data'
+
 
 def matplotlib_figure_to_pil_image(fig):
     """
@@ -737,7 +713,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
         return precision, recall, fpr, auc_roc, auc_pr, sorted_pred
 
     if task == 'binary':
-        precision, recall, fpr, auc_roc, auc_pr, sorted_pred = binary_pr_roc_auc(y_true, y_pred)
+        precision, recall, fpr, auc_roc, auc_pr, sorted_pred = binary_pr_roc_auc(y_true, y_pred[:,1])
 
         # Create the PR and ROC curves
         fig_pr, ax_pr = plt.subplots()

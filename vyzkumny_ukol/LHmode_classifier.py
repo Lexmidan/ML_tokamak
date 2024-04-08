@@ -22,13 +22,13 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             num_workers = 32,
                             num_epochs_for_fc = 10,
                             num_epochs_for_all_layers = 10,
-                            num_classes = 2,
+                            num_classes = 3,
                             batch_size = 32,
                             learning_rate_min = 0.001,
                             learning_rate_max = 0.01,
-                            comment_for_model_name = f', 2 output classes',
+                            comment_for_model_name = f', 3 output classes',
                             random_seed = 42,
-                            augmentation = True):
+                            augmentation = False):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -50,7 +50,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     shots_for_training = shot_for_ris[shot_for_ris['used_as'] == 'train']['shot']
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=False, ris_option=ris_option)
+                                                                    shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option)
 
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
@@ -83,9 +83,9 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     pretrained_model = pretrained_model.to(device)
 
     # Let's visualize the model
-    sample_input = next(iter(train_dataloader))['img']
-    print('Adding graph to tensorboard')
-    writer.add_graph(pretrained_model, sample_input.float().to(device))
+    # sample_input = next(iter(train_dataloader))['img']
+    # print('Adding graph to tensorboard')
+    # writer.add_graph(pretrained_model, sample_input.float().to(device))
 
     # Loss function
     criterion = nn.CrossEntropyLoss()
@@ -125,7 +125,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     torch.save(model.state_dict(), model_path)
 
     #### Test the model############################################
-    metrics = cmc.test_model(f'runs/{timestamp}_last_fc', model, test_dataloader, comment='', writer=writer)
+    metrics = cmc.test_model(f'runs/{timestamp}_last_fc', model, test_dataloader, comment='', 
+                             writer=writer, num_classes=num_classes, signal_name='img')
 
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
@@ -187,7 +188,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     }
 
     #### Test the model############################################
-    metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader, comment='', writer=writer)
+    metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader, comment='', writer=writer, signal_name='img', num_classes=num_classes)
 
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)

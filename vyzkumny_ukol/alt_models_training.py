@@ -13,6 +13,7 @@ import pandas as pd
 import pytorch_lightning as pl
 
 import alt_models as am
+import confinement_mode_classifier as cmc
 
 
 
@@ -117,7 +118,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     }
 
     # Train model
-    model = am.train_model(untrained_model, criterion, optimizer, exp_lr_scheduler, 
+    model = cmc.train_model(untrained_model, criterion, optimizer, exp_lr_scheduler, 
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs, 
                         chkpt_path = model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'),
                         signal_name=signal_name)
@@ -125,9 +126,9 @@ def train_and_test_alt_model(signal_name = 'divlp',
     torch.save(model.state_dict(), model_path)
 
     # Test model
-    metrics = am.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
+    metrics = cmc.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
 
-    am.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
+    cmc.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 
