@@ -15,11 +15,12 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 import pandas as pd
 import pytorch_lightning as pl
+from torchvision.models.resnet import ResNet50_Weights, ResNet34_Weights, ResNet101_Weights, ResNet152_Weights, ResNet18_Weights
 
 import confinement_mode_classifier as cmc
 
 def train_and_test_ris_model(ris_option = 'RIS1',
-                            pretrained_model = torchvision.models.resnet18(pretrained=True),
+                            pretrained_model = torchvision.models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1),
                             num_workers = 32,
                             num_epochs_for_fc = 10,
                             num_epochs_for_all_layers = 10,
@@ -133,7 +134,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                                 shots=shots_for_testing.values.tolist(), 
                                 results_df=metrics['prediction_df'], 
                                 writer=writer,
-                                num_classes=num_classes)
+                                num_classes=num_classes,
+                                two_images=ris_option=='both')
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 

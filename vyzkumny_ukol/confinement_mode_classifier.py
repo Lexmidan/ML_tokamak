@@ -17,6 +17,7 @@ from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, Mult
 from torchmetrics.classification import BinaryPrecision, BinaryRecall, F1Score, ConfusionMatrix, BinaryPrecisionRecallCurve, BinaryROC
 from torch.optim import lr_scheduler
 import torch.nn as nn
+from sklearn.metrics import cohen_kappa_score
 import copy
 from torch.utils.tensorboard import SummaryWriter
 import time 
@@ -350,7 +351,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 inputs = batch[signal_name].to(device).float()
                 labels = batch['label'].to(device)
 
-                if len(labels.size()) > 1:
+                if len(labels.size()) > 1: #If soft labels are used
                     _, ground_truth = torch.max(labels, axis=1)
                 else: 
                     ground_truth = labels
@@ -567,7 +568,7 @@ def test_model(run_path,
 def per_shot_test(path, shots: list, results_df: pd.DataFrame, 
                   writer: SummaryWriter = None, 
                   save_metrics_imgs: bool = True, 
-                  num_classes: int = 3):
+                  num_classes: int = 3, two_images: bool = False):
     '''
     Takes model's results dataframe from confinement_mode_classifier.test_model() and shot numbers.
     Returns metrics of model for each shot separately
@@ -583,10 +584,12 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
     Returns:
         path: Path where images are saved
     '''
-
+    metrics = {'shot':[], 'f1':[], 'precision':[], 'recall':[], 'kappa':[]}
     for shot in tqdm(shots):
         pred_for_shot = results_df[results_df['shot']==shot]
-        
+
+        metrics['shot'].append(shot)
+
         if num_classes==3:
             softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
         else:
@@ -599,25 +602,84 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
         confusion_matrix_metric.update(preds_tensor, labels_tensor)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
-        
-        conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
-        conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
-        
 
-        conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
-                          len(pred_for_shot[pred_for_shot['label']==1])*[1], 
-                          s=5, alpha=1, label='H-mode Truth', color='maroon')
-        
-        if num_classes==3:
-            conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
-            conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
-                            len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
-                            s=5, alpha=1, label='ELM Truth', color='royalblue')
-    
+        conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
+        if two_images: #If the model takes data from the shot twice (one for each RIS), then split the data. 
+            #I assume, that the first half of the data is from RIS1 and the second half from RIS2. 
+            #It should be by how the split_df() function works
+            pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
+
+            conf_time_ax.plot(pred_for_shot_ris1['time'],softmax_out[:len(pred_for_shot_ris1),1], label='H-mode Confidence RIS1')
+            conf_time_ax.plot(pred_for_shot_ris2['time'],softmax_out[len(pred_for_shot_ris1):,1], label='H-mode Confidence RIS2')
+
+            conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
+                          len(pred_for_shot_ris1[pred_for_shot_ris1['label']==1])*[1], 
+                          s=10, alpha=1, label='H-mode Truth', color='maroon')
+            
+            kappa1 = cohen_kappa_score(pred_for_shot_ris1['prediction'], pred_for_shot_ris1['label'])
+            kappa2 = cohen_kappa_score(pred_for_shot_ris2['prediction'], pred_for_shot_ris2['label'])
+
+            f1_ris1 = F1Score(task="multiclass", num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
+            f1_ris2 = F1Score(task="multiclass", num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+
+            precision_ris1 = MulticlassPrecision(num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
+            precision_ris2 = MulticlassPrecision(num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+
+            recall_ris1 = MulticlassRecall(num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
+            recall_ris2 = MulticlassRecall(num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+
+            conf_time_ax.set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa1:.2f}/{kappa2:.2f},\
+                                    F1 = {f1_ris1:.2f}/{f1_ris2:.2f}, Precision = {precision_ris1:.2f}/{precision_ris2:.2f},\
+                                    Recall = {recall_ris1:.2f}/{recall_ris2:.2f}')
+            
+            kappa = (kappa1 + kappa2)/2
+            f1 = (f1_ris1 + f1_ris2)/2
+            precision = (precision_ris1 + precision_ris2)/2
+            recall = (recall_ris1 + recall_ris2)/2
+
+            metrics['f1'].append(f1)
+            metrics['precision'].append(precision)
+            metrics['recall'].append(recall)
+            metrics['kappa'].append(kappa)
+
+            if num_classes==3:
+                conf_time_ax.plot(pred_for_shot_ris1['time'],-softmax_out[:len(pred_for_shot_ris1),2], label='ELM Confidence RIS1')
+                conf_time_ax.plot(pred_for_shot_ris2['time'],-softmax_out[len(pred_for_shot_ris1):,2], label='ELM Confidence RIS2')
+                conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
+                    len(pred_for_shot_ris1[pred_for_shot_ris1['label']==2])*[-1], 
+                    s=10, alpha=1, label='ELM Truth', color='royalblue')
+                
+        else:
+            conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
+
+            kappa = cohen_kappa_score(pred_for_shot['prediction'], pred_for_shot['label'])
+            f1 = F1Score(task="multiclass", num_classes=num_classes)(preds_tensor, labels_tensor)
+            precision = MulticlassPrecision(num_classes=num_classes)(preds_tensor, labels_tensor)
+            recall = MulticlassRecall(num_classes=num_classes)(preds_tensor, labels_tensor)
+
+            conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
+                            len(pred_for_shot[pred_for_shot['label']==1])*[1], 
+                            s=10, alpha=1, label='H-mode Truth', color='maroon')
+            
+            conf_time_ax.set_title(f'Shot {shot}, kappa = {kappa:.2f}, F1 = {f1:.2f},\
+                                    Precision = {precision:.2f}, Recall = {recall:.2f}')
+            
+            metrics['f1'].append(f1)
+            metrics['precision'].append(precision)
+            metrics['recall'].append(recall)
+            metrics['kappa'].append(kappa)
+
+            if num_classes==3:
+                conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
+                conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
+                                len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
+                                s=10, alpha=1, label='ELM Truth', color='royalblue')
+        metrics
+
         conf_time_ax.set_xlabel('t [ms]')
         conf_time_ax.set_ylabel('Confidence')
 
-        plt.title(f'shot {shot}')
+        
         conf_time_ax.legend()
 
         conf_matrix_ax.set_title(f'confusion matrix for shot {shot}')
@@ -824,3 +886,26 @@ class AddRandomNoise(object):
 
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+    
+
+def split_into_two_monotonic_dfs(df):
+    """
+    We have a df with non monotonic time column.
+    Split it into two monotonic dfs.
+
+    Parameters:
+    df (pd.DataFrame): DataFrame with a 'time' column.
+
+    Returns:
+    tuple of pd.DataFrame: Two DataFrames split at the first non-monotonic point.
+    """
+    # Find the first non-monotonic increase point
+    for i in range(1, len(df)):
+        if df['time'].iloc[i] <= df['time'].iloc[i - 1]:
+            # Split the DataFrame at the found index
+            df1 = df.iloc[:i]
+            df2 = df.iloc[i:]
+            return df1, df2
+
+    # If no non-monotonic point found, return the entire DataFrame as one part, and an empty DataFrame as the other
+    return df, pd.DataFrame(columns=df.columns)

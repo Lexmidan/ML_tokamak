@@ -325,7 +325,8 @@ class Reshape(nn.Module):
 
 def split_df(df, shots, shots_for_training, shots_for_testing, 
              shots_for_validation, signal_name, use_ELMs=True, no_L_mode = False,
-             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False):
+             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False,
+             test_df_contains_val_df=True):
 
     """
     Splits the dataframe into train, test and validation sets. 
@@ -355,7 +356,31 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
         df['shot'] = shot
 
         # Load the dataset
-        if exponential_elm_decay:
+        if exponential_elm_decay and no_L_mode: #This creates soft labels for 2 classes
+            df['soft_label'] = df.apply(lambda x: [1, 0] if x['mode'] == 'H-mode' else [1, 0], axis=1)            
+            #Pre peak and post peak time
+            pre_time = 1
+            post_time = 2
+            if df['mode'].str.contains('ELM-peak').any():
+                for elm_peak in df[df['mode'] == 'ELM-peak']['time']:
+                    
+                    # Pre-ELM probabilities
+                    pre_indices = df.loc[df['time'].between(elm_peak-pre_time, elm_peak)].index
+                    if not pre_indices.empty:
+                        pre_elm_prob = np.exp(-5 * np.linspace(pre_time, 0, len(pre_indices)))
+                        for i, prob in zip(pre_indices, pre_elm_prob):
+                            df.at[i, 'soft_label'] = [1 - np.max([prob, df.at[i, 'soft_label'][1]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][1]])]
+                    
+                    # Post-ELM probabilities
+                    post_indices = df.loc[df['time'].between(elm_peak, elm_peak+post_time)].index
+                    if not post_indices.empty:
+                        post_elm_prob = np.exp(-3 * np.linspace(0, post_time, len(post_indices)))
+                        for i, prob in zip(post_indices, post_elm_prob):
+                            df.at[i, 'soft_label'] = [1 - np.max([prob, df.at[i, 'soft_label'][1]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][1]])]
+                            
+        elif exponential_elm_decay and not no_L_mode: #This creates soft labels for 2 classes
             df['soft_label'] = df.apply(lambda x: [0, 1, 0] if x['mode'] == 'H-mode' else [1, 0, 0], axis=1)            
             #Pre peak and post peak time
             pre_time = 1
@@ -378,6 +403,8 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
                         for i, prob in zip(post_indices, post_elm_prob):
                             df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
                                                     np.max([prob, df.at[i, 'soft_label'][2]])]
+                            
+            # OLD IMPLEMENTATION OF SOFT LABELS FOR 3 CLASSES - TAKES TOO LONG
             # df['mode'] = df['soft_label']
             # df.drop('soft_label', axis=1, inplace=True)
 
@@ -418,9 +445,14 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
 
     shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
-    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
+    
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
+
+    if test_df_contains_val_df:
+        test_df = shot_df[~shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
+    else:
+        test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
 
     return shot_df, test_df, val_df, train_df
 

@@ -142,7 +142,8 @@ def train_and_test_alt_model(signal_name = 'divlp',
                              signal_name=signal_name, 
                              writer=writer, 
                              num_classes=num_classes)
-
+    
+    metrics['prediction_df'].to_csv(f'{path}/runs/{timestamp}/prediction_df.csv')
     cmc.per_shot_test(f'{path}/runs/{timestamp}', 
                       shots_for_testing, 
                       metrics['prediction_df'], 
