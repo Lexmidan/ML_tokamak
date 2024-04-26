@@ -2,13 +2,15 @@
 /vyzkumny_ukol/preds_vs_actuals
 vyzkumny_ukol/process new imgs.ipynb
 *process_data_for_alt_models.ipynb
-*sandbox*
+./vyzkumny_ukol/sandbox.ipynb
 /gamma_spice_sim
 /gamma_spice_sim*
+/
 /data 
 /saved_models
 cross_validation_of_RIS1_model
-/vyzkumny_ukol/data
+cross_validation_of_combined_model
+vyzkumny_ukol/runs
 /runs
 /old_runs
 vyzkumny_ukol/old_runs
@@ -25,7 +27,7 @@ PyTorch/Data
 # C extensions
 *.so
 *.png
-vyzkumny_ukol/runs
+
 ###########
 
 # Distribution / packaging
@@ -152,3 +154,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+vyzkumny_ukol/routine.py
+vyzkumny_ukol/sandbox.ipynb
+vyzkumny_ukol/routine copy.py

@@ -366,7 +366,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
                     #TODO: inputs.type. 
                     _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
-                    loss = criterion(outputs, labels)
+                    loss = criterion(outputs, labels.long())
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -529,9 +529,11 @@ def test_model(run_path,
 
         # Open the saved images using Pillow
         roc_img = matplotlib_figure_to_pil_image(roc_fig)
-        roc_img = roc_img.crop([int(0.06*roc_img.width), 0, int(0.8*roc_img.width), roc_img.height])
         pr_img = matplotlib_figure_to_pil_image(pr_fig)
-        pr_img = pr_img.crop([int(0.06*pr_img.width), 0, int(0.8*pr_img.width), pr_img.height])
+
+        if num_classes==3: #otherwise the images are too wide (problem with 3 colorbars)
+            roc_img = roc_img.crop([int(0.06*roc_img.width), 0, int(0.8*roc_img.width), roc_img.height])
+            pr_img = pr_img.crop([int(0.06*pr_img.width), 0, int(0.8*pr_img.width), pr_img.height])
         conf_matrix_img = matplotlib_figure_to_pil_image(conf_matrix_fig)
         
         # Resize the images to have the same height
@@ -723,6 +725,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
         ax_pr.set_xlabel('Recall')
         ax_pr.set_ylabel('Precision')
         ax_pr.set_title(f'PR AUC: {auc_pr:.4f}')
+        ax_pr.grid(True)
 
         fig_roc, ax_roc = plt.subplots()
         scatter_roc = ax_roc.scatter(fpr, recall, c=sorted_pred, cmap=cmap, s=2)
@@ -731,6 +734,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
         ax_roc.set_xlabel("False Positive Rate")
         ax_roc.set_ylabel("True Positive Rate")
         ax_roc.set_title(f'ROC AUC: {auc_roc:.4f}')
+        ax_roc.grid(True)
 
         # Add colorbar
         cbar_pr = fig_pr.colorbar(scatter_pr)

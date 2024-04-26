@@ -22,7 +22,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 import confinement_mode_classifier as cmc
 
-################################## Stolen from https://github.com/TheMrGhostman/InceptionTime-Pytorch/##################################
+####### Stolen from https://github.com/TheMrGhostman/InceptionTime-Pytorch/###########
 def correct_sizes(sizes):
 	corrected_sizes = [s if s % 2 != 0 else s - 1 for s in sizes]
 	return corrected_sizes
@@ -33,7 +33,8 @@ def pass_through(X):
 
 
 class Inception(nn.Module):
-	def __init__(self, in_channels, n_filters, kernel_sizes=[9, 19, 39], bottleneck_channels=32, activation=nn.ReLU(), return_indices=False):
+	def __init__(self, in_channels, n_filters, kernel_sizes=[9, 19, 39], 
+              bottleneck_channels=32, activation=nn.ReLU(), return_indices=False):
 		"""
 		: param in_channels				Number of input channels (input features)
 		: param n_filters				Number of filters per convolution layer => out_channels = 4*n_filters
@@ -118,7 +119,8 @@ class Inception(nn.Module):
 
 
 class InceptionBlock(nn.Module):
-	def __init__(self, in_channels, n_filters=32, kernel_sizes=[9,19,39], bottleneck_channels=32, use_residual=True, activation=nn.ReLU(), return_indices=False):
+	def __init__(self, in_channels, n_filters=32, kernel_sizes=[9,19,39], bottleneck_channels=32, 
+              use_residual=True, activation=nn.ReLU(), return_indices=False):
 		super(InceptionBlock, self).__init__()
 		self.use_residual = use_residual
 		self.return_indices = return_indices
@@ -252,7 +254,8 @@ class InceptionTranspose(nn.Module):
 
 
 class InceptionTransposeBlock(nn.Module):
-	def __init__(self, in_channels, out_channels=32, kernel_sizes=[9,19,39], bottleneck_channels=32, use_residual=True, activation=nn.ReLU()):
+	def __init__(self, in_channels, out_channels=32, kernel_sizes=[9,19,39], bottleneck_channels=32,
+               use_residual=True, activation=nn.ReLU()):
 		super(InceptionTransposeBlock, self).__init__()
 		self.use_residual = use_residual
 		self.activation = activation
@@ -321,13 +324,19 @@ class Reshape(nn.Module):
 
 
 def split_df(df, shots, shots_for_training, shots_for_testing, 
-             shots_for_validation, signal_name, use_ELMS=True, 
-             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=True):
+             shots_for_validation, signal_name, use_ELMs=True, no_L_mode = False,
+             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False):
 
     """
     Splits the dataframe into train, test and validation sets. 
     ALSO SCALES THE DATA
     """
+    if only_ELMs: #yeaaah... this is beacause use_ELMs make ELM a 3rd class, but only_ELMs should make it 2nd class
+          if use_ELMs:
+                raise Warning('use_ELMs and only_ELMs are both set to True. \
+                              This is not a valid combination. Setting only_ELMs to False.')
+          use_ELMs = False
+
     signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal_{sampling_freq}kHz', 
                          'mc': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz',
                          'mcDIV': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
@@ -344,9 +353,10 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
     for shot in shots:
         df = pd.read_csv(f'{signal_paths_dict[signal_name]}/shot_{shot}.csv')
         df['shot'] = shot
-        df['soft_label'] = df.apply(lambda x: [0, 1, 0] if x['mode'] == 'H-mode' else [1, 0, 0], axis=1)
+
         # Load the dataset
         if exponential_elm_decay:
+            df['soft_label'] = df.apply(lambda x: [0, 1, 0] if x['mode'] == 'H-mode' else [1, 0, 0], axis=1)            
             #Pre peak and post peak time
             pre_time = 1
             post_time = 2
@@ -368,7 +378,8 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
                         for i, prob in zip(post_indices, post_elm_prob):
                             df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
                                                     np.max([prob, df.at[i, 'soft_label'][2]])]
-
+            # df['mode'] = df['soft_label']
+            # df.drop('soft_label', axis=1, inplace=True)
 
             #     # Identify ELM-peak events and their times
             #     elm_peak_times = df[df['mode'] == 'ELM-peak']['time']
@@ -388,7 +399,8 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
             #     'ELM': [0, 0, .0],
             #     'ELM-peak': [0, 0, .0]
             # }
-            # df['probs']=df.apply(lambda x: [apply_mode_prob_adjusted(x, mode_to_one_hot=mode_to_one_hot)], axis=1, result_type='expand')
+            # df['probs']=df.apply(lambda x: [apply_mode_prob_adjusted(x, 
+            #                  mode_to_one_hot=mode_to_one_hot)], axis=1, result_type='expand')
                      
 
         shot_df = pd.concat([shot_df, df], axis=0)
@@ -396,9 +408,14 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
     #Replace the mode with a number
     df_mode = shot_df['mode'].copy()
     df_mode[shot_df['mode']=='L-mode'] = 0
-    df_mode[shot_df['mode']=='H-mode'] = 1
-    df_mode[shot_df['mode'].isin(['ELM', 'ELM-peak'])] = 2 if use_ELMS else 1
+    df_mode[shot_df['mode']=='H-mode'] = 1 if not only_ELMs else 0
+    df_mode[shot_df['mode'].isin(['ELM', 'ELM-peak'])] = 2 if use_ELMs else 1
     shot_df['mode'] = df_mode
+
+    if no_L_mode:
+        shot_df = shot_df[shot_df['mode'] != 0]
+        shot_df['mode'] = shot_df['mode'].map({1: 0, 2: 1}) #map H-mode to 0 and ELM to 1
+
     shot_df = shot_df.reset_index(drop=True) #each shot has its own indexing
 
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
@@ -430,7 +447,8 @@ class SignalDataset(Dataset):
         self.dpoints_in_future = dpoints_in_future
 
         if self.signal_name not in ['divlp', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
-            raise ValueError(f'{self.signal_name} is not a valid signal name. Please use one of the following: divlp, mcDIV, mcHFS, mcLFS, mcTOP, h_alpha')
+            raise ValueError(f'{self.signal_name} is not a valid signal name. Please use one of the following:\
+                              divlp, mcDIV, mcHFS, mcLFS, mcTOP, h_alpha')
 
     def __len__(self):
         return len(self.df)
@@ -443,13 +461,17 @@ class SignalDataset(Dataset):
             signal_window = torch.full((self.window,), self.df.iloc[0][f'{self.signal_name}'])
 
         else:
-            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : idx+self.dpoints_in_future]
+            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) \
+                                                      : idx+self.dpoints_in_future]
                                          [f'{self.signal_name}'].to_numpy())
 
         label = self.df.iloc[idx]['mode']
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
-        return {'label': label, 'time': time, f'{self.signal_name}': signal_window.astype(float), 'shot': shot_num.astype(int)}
+        return {'label': label, 
+                'time': time, 
+                f'{self.signal_name}': signal_window.astype(float), 
+                'shot': shot_num.astype(int)}
 
 
 class MultipleMirnovCoilsDataset(Dataset):
@@ -464,6 +486,7 @@ class MultipleMirnovCoilsDataset(Dataset):
         self.df = df
         self.window = window
         self.dpoints_in_future = dpoints_in_future
+        self.label_column = 'soft_label' if 'soft_label' in self.df.columns else 'mode'
     def __len__(self):
         return len(self.df)
 
@@ -475,11 +498,12 @@ class MultipleMirnovCoilsDataset(Dataset):
             #TODO: This is a bit ugly, but I don't know how to do it better
             signal_window = torch.full((self.window, 4), 0.0)
         else:
-            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : idx+self.dpoints_in_future]
+            signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : \
+                                                       idx+self.dpoints_in_future]
                                          [['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
         signal_window = signal_window.transpose(0, 1) #so batch shape corresponds to [batch_size, n_channels, window]
 
-        label = torch.tensor(self.df.iloc[idx]['soft_label'], dtype=torch.float) 
+        label = torch.tensor(self.df.iloc[idx][self.label_column], dtype=torch.float) 
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
         return {'label': label, 'time': time, 'mc': signal_window, 'shot': shot_num}
@@ -507,9 +531,14 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     
     #If we plan to use all mirnov coils, then we need to use MultipleMirnovCoilsDataset
     if signal_name == 'mc':
-        dataset = MultipleMirnovCoilsDataset(df, window=signal_window, dpoints_in_future=dpoints_in_future)
+        dataset = MultipleMirnovCoilsDataset(df, 
+                                             window=signal_window, 
+                                             dpoints_in_future=dpoints_in_future)
     else:
-        dataset = SignalDataset(df, window=signal_window, signal_name=signal_name, dpoints_in_future=dpoints_in_future)
+        dataset = SignalDataset(df, 
+                                window=signal_window, 
+                                signal_name=signal_name, 
+                                dpoints_in_future=dpoints_in_future)
 
     #Balance the data
     if balance_data:
@@ -538,7 +567,8 @@ class Simple1DCNN(nn.Module):
 
         self.window = window # Length of the input signal
 
-        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=128, kernel_size=32, stride=1, padding=1, dilation=1)
+        self.conv1 = nn.Conv1d(in_channels=in_channels, out_channels=128,\
+                               kernel_size=32, stride=1, padding=1, dilation=1)
         self.batch_norm1 = nn.BatchNorm1d(128)
 
         self.conv2 = nn.Conv1d(in_channels=128, out_channels=64, kernel_size=32, stride=1, padding=1, dilation=2)
@@ -549,25 +579,26 @@ class Simple1DCNN(nn.Module):
 
         ## calculate input size for the fully connected layer
         def output_size_of_1d_conv_layer(input_length, kernel_size, padding, dilation, stride):
-            output_length = np.floor((input_length + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1) // stride[0]) + 1
+            output_length = np.floor((input_length + 2*padding[0] -\
+                                      dilation[0]*(kernel_size[0]-1) - 1) // stride[0]) + 1
             return output_length
         
         first_layer_out_length = output_size_of_1d_conv_layer(window, self.conv1.kernel_size, 
-                                                           self.conv1.padding, 
-                                                           self.conv1.dilation, 
-                                                           self.conv1.stride)
+                                                              self.conv1.padding, 
+                                                              self.conv1.dilation, 
+                                                              self.conv1.stride)
         
         second_layer_out_length = output_size_of_1d_conv_layer(first_layer_out_length, 
-                                                            self.conv2.kernel_size, 
-                                                            self.conv2.padding, 
-                                                            self.conv2.dilation, 
-                                                            self.conv2.stride)
+                                                               self.conv2.kernel_size, 
+                                                               self.conv2.padding, 
+                                                               self.conv2.dilation, 
+                                                               self.conv2.stride)
         
         pool_layer_out_length = output_size_of_1d_conv_layer(second_layer_out_length, 
-                                                          self.avg_pool.kernel_size, 
-                                                          self.avg_pool.padding, 
-                                                          (1,), 
-                                                          self.avg_pool.stride)
+                                                             self.avg_pool.kernel_size, 
+                                                             self.avg_pool.padding, 
+                                                             (1,), 
+                                                             self.avg_pool.stride)
         
         input_length_for_fc = int(pool_layer_out_length*2*self.batch_norm2.num_features)
 
@@ -607,7 +638,8 @@ def select_model_architecture(architecture: str, num_classes: int, window: int, 
     Selects and returns a model architecture based on the specified architecture name.
 
     Args:
-        architecture (str): The name of the architecture to select. Valid options are 'InceptionTime' and 'Simple1DCNN'.
+        architecture (str): The name of the architecture to select.\
+              Valid options are 'InceptionTime' and 'Simple1DCNN'.
         num_classes (int): The number of output classes for the model.
         window (int): The size of the input window of given signal.
 
@@ -647,7 +679,8 @@ def select_model_architecture(architecture: str, num_classes: int, window: int, 
         model = Simple1DCNN(num_classes=num_classes, window=window, in_channels=in_channels)
 
     else:
-        raise ValueError(f'{architecture} is not a valid architecture. Please use one of the following: InceptionTime, Simple1DCNN')
+        raise ValueError(f'{architecture} is not a valid architecture.\
+                          Please use one of the following: InceptionTime, Simple1DCNN')
     return model
 
 class RobustScalerNumpy:

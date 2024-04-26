@@ -19,6 +19,7 @@ import pytorch_lightning as pl
 import confinement_mode_classifier as cmc
 
 def train_and_test_ris_model(ris_option = 'RIS1',
+                            pretrained_model = torchvision.models.resnet18(pretrained=True),
                             num_workers = 32,
                             num_epochs_for_fc = 10,
                             num_epochs_for_all_layers = 10,
@@ -73,7 +74,6 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     writer = SummaryWriter(f'runs/{timestamp}_last_fc')
 
     # Load a pretrained model and reset final fully connected layer.
-    pretrained_model = torchvision.models.resnet18(weights='IMAGENET1K_V1')
     for param in pretrained_model.parameters():
         param.requires_grad = False
     
@@ -105,6 +105,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                         chkpt_path=model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'))
 
     hyperparameters = {
+    'model': model.__class__.__name__,
     'batch_size': batch_size,
     'num_epochs': num_epochs_for_fc,
     'optimizer': optimizer.__class__.__name__,
@@ -129,7 +130,10 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                              writer=writer, num_classes=num_classes, signal_name='img')
 
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
-                                shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
+                                shots=shots_for_testing.values.tolist(), 
+                                results_df=metrics['prediction_df'], 
+                                writer=writer,
+                                num_classes=num_classes)
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 
@@ -149,6 +153,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
         f.write(json_str)
 
     #### Train the whole model######################################
+    torch.cuda.empty_cache()
+
     # Loss function
     criterion = nn.CrossEntropyLoss()
 
@@ -188,10 +194,12 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     }
 
     #### Test the model############################################
-    metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader, comment='', writer=writer, signal_name='img', num_classes=num_classes)
+    metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader,
+                              comment='', writer=writer, signal_name='img', num_classes=num_classes)
 
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
-                                shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'], writer=writer)
+                                shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'],
+                                writer=writer, num_classes=num_classes)
     
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 

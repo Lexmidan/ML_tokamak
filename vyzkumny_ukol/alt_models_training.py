@@ -23,12 +23,18 @@ def train_and_test_alt_model(signal_name = 'divlp',
                             dpoints_in_future = 160,
                             sampling_freq = 300,
                             batch_size = 512,
-                            num_workers = 8,
-                            num_epochs = 12,
+                            num_workers = 32,
+                            num_epochs = 1,
                             learning_rate_min = 0.001,
                             learning_rate_max = 0.01,
                             comment_for_model_name = '',
-                            random_seed = 42):
+                            random_seed = 42,
+                            exponential_elm_decay = False,
+                            num_classes = 3,
+                            weight_decay = 0.01,
+                            use_ELMs = True,
+                            no_L_mode = False,
+                            only_ELMs = False):
     """ 
     Trains and tests alternative model on given signal.
     """
@@ -52,8 +58,10 @@ def train_and_test_alt_model(signal_name = 'divlp',
     shots_for_training = shot_for_alt[shot_for_alt['used_as'] == 'train']['shot']
 
     shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_training, shots_for_testing, 
-                                                     shots_for_validation, use_ELMS=True, 
-                                                     signal_name=signal_name, sampling_freq=sampling_freq)
+                                                     shots_for_validation, use_ELMs=use_ELMs, 
+                                                     signal_name=signal_name, sampling_freq=sampling_freq, 
+                                                     exponential_elm_decay=exponential_elm_decay, no_L_mode=no_L_mode,
+                                                     only_ELMs=only_ELMs)
 
 
     # Create dataloaders
@@ -85,7 +93,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
 
     # Create model
     untrained_model = am.select_model_architecture(architecture=architecture, window=signal_window, 
-                                                   num_classes=3, in_channels=in_channels)
+                                                   num_classes=num_classes, in_channels=in_channels)
     untrained_model = untrained_model.to(device)
 
     # Write model graph to tensorboard
@@ -94,7 +102,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
 
     criterion = nn.CrossEntropyLoss()
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(untrained_model.parameters(), lr=learning_rate_min, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(untrained_model.parameters(), lr=learning_rate_min, weight_decay=weight_decay)
 
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs) #!!!
 
@@ -109,12 +117,14 @@ def train_and_test_alt_model(signal_name = 'divlp',
     'shots_for_validation': torch.tensor(shots_for_validation.values.tolist()),
     'shots_for_training': torch.tensor(shots_for_training.values.tolist()),
     'signal_name': signal_name,
-    'num_classes': 3,
+    'num_classes': num_classes,
     'sampling_frequency':sampling_freq,
     'random_seed': random_seed,
     'architecture': architecture,
     'signal_window': signal_window,
-    'dpoints_in_future': dpoints_in_future
+    'dpoints_in_future': dpoints_in_future,
+    'exponential_elm_decay': exponential_elm_decay,
+    'only_ELMS': 'True' if only_ELMs else 'False',
     }
 
     # Train model
@@ -126,17 +136,28 @@ def train_and_test_alt_model(signal_name = 'divlp',
     torch.save(model.state_dict(), model_path)
 
     # Test model
-    metrics = cmc.test_model(f'{path}/runs/{timestamp}', model, test_dataloader, comment ='3 classes', signal_name=signal_name, writer=writer)
+    metrics = cmc.test_model(f'{path}/runs/{timestamp}', model, 
+                             test_dataloader, 
+                             comment ='', 
+                             signal_name=signal_name, 
+                             writer=writer, 
+                             num_classes=num_classes)
 
-    cmc.per_shot_test(f'{path}/runs/{timestamp}', shots_for_testing, metrics['prediction_df'], writer=writer)
+    cmc.per_shot_test(f'{path}/runs/{timestamp}', 
+                      shots_for_testing, 
+                      metrics['prediction_df'], 
+                      writer=writer, 
+                      num_classes=num_classes)
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 
                         'Precision on test_dataset':metrics['precision'].tolist(), 
-                        'Recall on test_dataset':metrics['recall'].tolist(),
-                        'PR AUC L-mode on test_dataset':metrics['pr_roc_curves']['pr_auc'][0].tolist(),
-                        'PR AUC H-mode on test_dataset':metrics['pr_roc_curves']['pr_auc'][1].tolist(),
-                        'PR AUC ELM on test_dataset':metrics['pr_roc_curves']['pr_auc'][2].tolist()}
+                        'Recall on test_dataset':metrics['recall'].tolist()}
+    if num_classes == 3:
+        one_digit_metrics['PR AUC L-mode on test_dataset'] = metrics['pr_roc_curves']['pr_auc'][0].tolist()
+        one_digit_metrics['PR AUC H-mode on test_dataset'] = metrics['pr_roc_curves']['pr_auc'][1].tolist()
+        one_digit_metrics['PR AUC ELM on test_dataset'] = metrics['pr_roc_curves']['pr_auc'][2].tolist()
+    
 
     writer.add_hparams(hyperparameters, one_digit_metrics)
     writer.close()
