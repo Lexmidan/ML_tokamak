@@ -15,6 +15,10 @@ vyzkumny_ukol/runs
 /old_runs
 vyzkumny_ukol/old_runs
 /spice
+vyzkumny_ukol/routine.py
+vyzkumny_ukol/sandbox.ipynb
+vyzkumny_ukol/routine copy.py
+vyzkumny_ukol/PhyDNet/runs
 
 
 # Byte-compiled / optimized / DLL files
@@ -154,6 +158,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-vyzkumny_ukol/routine.py
-vyzkumny_ukol/sandbox.ipynb
-vyzkumny_ukol/routine copy.py
+

@@ -322,20 +322,40 @@ class Reshape(nn.Module):
 ##############################################################################	
 
 
-
 def split_df(df, shots, shots_for_training, shots_for_testing, 
              shots_for_validation, signal_name, use_ELMs=True, no_L_mode = False,
              path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False,
              test_df_contains_val_df=True):
 
     """
-    Splits the dataframe into train, test and validation sets. 
-    ALSO SCALES THE DATA
+    Splits the dataframe into train, test, and validation sets and scales the data.
+
+    Parameters:
+    df (pandas.DataFrame): The input dataframe. Should contain.
+    shots (list): A list of shot numbers.
+    shots_for_training (list): A list of shot numbers to be used for training.
+    shots_for_testing (list): A list of shot numbers to be used for testing.
+    shots_for_validation (list): A list of shot numbers to be used for validation.
+    signal_name (str): The name of the signal, e.g. 'mc', 'divlp'.
+    use_ELMs (bool, optional): Whether to label ELMs as 3d class. Defaults to True.
+    only_ELMs (bool, optional): Whether to label H-mode and L-mode as one class, and ELMs as another. Defaults to False.
+    no_L_mode (bool, optional): Whether to exclude L-mode from whole dataset. Defaults to False.
+    path (str, optional): The path to the data. Defaults to the current working directory.
+    sampling_freq (int, optional): The sampling frequency. Defaults to 300.
+    exponential_elm_decay (bool, optional): Whether to use soft labels for ELMs. Defaults to False.
+    test_df_contains_val_df (bool, optional): Whether include validation dataframe to test dataframe. Defaults to True.
+
+    Returns:
+    tuple: A tuple containing the following dataframes:
+        - shot_df (pandas.DataFrame): The dataframe with all shots.
+        - test_df (pandas.DataFrame): The dataframe for testing.
+        - val_df (pandas.DataFrame): The dataframe for validation.
+        - train_df (pandas.DataFrame): The dataframe for training.
     """
     if only_ELMs: #yeaaah... this is beacause use_ELMs make ELM a 3rd class, but only_ELMs should make it 2nd class
           if use_ELMs:
-                raise Warning('use_ELMs and only_ELMs are both set to True. \
-                              This is not a valid combination. Setting only_ELMs to False.')
+                print('Warning: use_ELMs and only_ELMs are both set to True.\
+                        This is not a valid combination. Setting only_ELMs to False.')
           use_ELMs = False
 
     signal_paths_dict = {'h_alpha': f'{path}/data/h_alpha_signal_{sampling_freq}kHz', 
@@ -559,7 +579,7 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     """
 
     if shuffle and balance_data:
-        raise Exception("Can't use data shuffling and balancing simultaneously")
+        raise Exception("Can't use data shuffling and balancing together")
     
     #If we plan to use all mirnov coils, then we need to use MultipleMirnovCoilsDataset
     if signal_name == 'mc':

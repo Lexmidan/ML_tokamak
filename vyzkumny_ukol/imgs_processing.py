@@ -169,65 +169,69 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
     variant: which variant of diagnostics to use.
     '''
     for shot in tqdm(shots):
-        print('Working on shot ', shot)
+        try:
+            print('Working on shot ', shot)
 
-        out_path = Path(f'./imgs/{shot}')
-        if not os.path.exists(out_path):
-            os.mkdir(out_path, mode=0o777)
+            out_path = Path(f'./imgs/{shot}')
+            if not os.path.exists(out_path):
+                os.mkdir(out_path, mode=0o777)
 
-        ris1_data = load_RIS_data(shot, 1)
-        
+            ris1_data = load_RIS_data(shot, 1)
+            
 
-        ris1_names = save_ris_images_to_folder(ris1_data, path=out_path, ris=1, shot=shot, 
-                                               use_discharge_duration=use_discharge_duration, 
-                                               just_names=just_names)
-        if save_ris2:
-            ris2_data = load_RIS_data(shot, 2)
-            ris2_names = save_ris_images_to_folder(ris2_data, path=out_path, ris=2, shot=shot, 
+            ris1_names = save_ris_images_to_folder(ris1_data, path=out_path, ris=1, shot=shot, 
                                                 use_discharge_duration=use_discharge_duration, 
                                                 just_names=just_names)
+            if save_ris2:
+                ris2_data = load_RIS_data(shot, 2)
+                ris2_names = save_ris_images_to_folder(ris2_data, path=out_path, ris=2, shot=shot, 
+                                                    use_discharge_duration=use_discharge_duration, 
+                                                    just_names=just_names)
 
-        #contains time and the state of the plasma (L-mode, H-mode, ELM)
-        LorH = pd.DataFrame(data={'mode':np.full(len(ris1_data), 'L-mode')}, 
-                            index=pd.Index(ris1_data.time, name='time'))
+            #contains time and the state of the plasma (L-mode, H-mode, ELM)
+            LorH = pd.DataFrame(data={'mode':np.full(len(ris1_data), 'L-mode')}, 
+                                index=pd.Index(ris1_data.time, name='time'))
+            
+            t_ELM_start = cdb.get_signal(f"t_ELM_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+            t_ELM_end = cdb.get_signal(f"t_ELM_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+            t_H_mode_start = cdb.get_signal(f"t_H_mode_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+            t_H_mode_end = cdb.get_signal(f"t_H_mode_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
+
+            #TODO:  To create a DataFrame with only one row, one needs to specify an index, 
+            # so if plasma enters H-mode more than once during one shot index have to be passed. Thus crutch with try: except:
+            try:
+                len(t_ELM_start.data)
+            except:
+                t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data}, index=[0])
+            else:
+                t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data})
+
+            try:
+                len(t_H_mode_start.data)
+            except:
+                t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data}, index=[0])
+            else:
+                t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data})
+
+
+            for H_mode in t_H_mode.values:
+                LorH.loc[H_mode[0]:H_mode[1]] = 'H-mode'
+
+            for elm in t_ELM.values:
+                LorH.loc[elm[0]:elm[1]] = 'ELM'
+
+            #Discarding pictures without plasma
+            discharge_start, discharge_end = discharge_duration(shot)
+            LorH = LorH[discharge_start : discharge_end]
+
+            #Appending columns with paths of the RIS imgs
+            LorH['filename'] = np.array(ris1_names)
+            LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
+            print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
+            
+        except Exception as e:
+            print(f'Error processing shot {shot}: {e}')
         
-        t_ELM_start = cdb.get_signal(f"t_ELM_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
-        t_ELM_end = cdb.get_signal(f"t_ELM_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
-        t_H_mode_start = cdb.get_signal(f"t_H_mode_start/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
-        t_H_mode_end = cdb.get_signal(f"t_H_mode_end/SYNTHETIC_DIAGNOSTICS:{shot}:{variant}")
-
-        #TODO:  To create a DataFrame with only one row, one needs to specify an index, 
-        # so if plasma enters H-mode more than once during one shot index have to be passed. Thus crutch with try: except:
-        try:
-            len(t_ELM_start.data)
-        except:
-            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data}, index=[0])
-        else:
-            t_ELM = pd.DataFrame({'start':t_ELM_start.data, 'end':t_ELM_end.data})
-
-        try:
-            len(t_H_mode_start.data)
-        except:
-            t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data}, index=[0])
-        else:
-            t_H_mode = pd.DataFrame({'start':t_H_mode_start.data, 'end':t_H_mode_end.data})
-
-
-        for H_mode in t_H_mode.values:
-            LorH.loc[H_mode[0]:H_mode[1]] = 'H-mode'
-
-        for elm in t_ELM.values:
-            LorH.loc[elm[0]:elm[1]] = 'ELM'
-
-        #Discarding pictures without plasma
-        discharge_start, discharge_end = discharge_duration(shot)
-        LorH = LorH[discharge_start : discharge_end]
-
-        #Appending columns with paths of the RIS imgs
-        LorH['filename'] = np.array(ris1_names)
-        LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
-        print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
-    
 
 def add_average_halpha_column(lh_mode_df, shot):
     """

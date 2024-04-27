@@ -24,8 +24,9 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023', sampling_f
     
     #RobustScaler for scaling the signals
     scaler = imgs.RobustScalerNumpy().fit_transform
-    for shot in tqdm(shot_numbers):
-        print('working on shot:', shot)
+
+    shot = 0 #In order to tqdm print the description
+    for shot in tqdm(shot_numbers, desc=f'working on shot:{shot}'):
 
         #Load shot from CDBClient
         shot_from_client = cdbxr.Shot(shot)
@@ -95,16 +96,16 @@ def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023', sampling_f
             # Update the 'mode' column for the closest index
             signal_df.iloc[closest_idx, signal_df.columns.get_loc('mode')] = 'ELM-peak'
 
-            # Save data
-            signal_df.to_csv(f'{directories[signal_name]}_{sampling_freq}kHz/shot_{shot}.csv')
+        # Save data
+        signal_df.to_csv(f'{directories[signal_name]}_{sampling_freq}kHz/shot_{shot}.csv')
 
 
 def process_data_for_multiple_mirnov_coils(shot_numbers, variant = 'seidl_2023', sampling_freq=300):
     
     #RobustScaler for scaling the signals
     scaler = imgs.RobustScalerNumpy().fit_transform
-    for shot in tqdm(shot_numbers):
-        print('working on shot:', shot)
+    shot = 0 #In order to tqdm print the description
+    for shot in tqdm(shot_numbers, desc=f'working on shot:{shot}'):
 
         #Load shot from CDBClient
         shot_from_client = cdbxr.Shot(shot)

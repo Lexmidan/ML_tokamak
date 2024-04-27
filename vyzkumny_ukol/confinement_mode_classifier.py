@@ -163,11 +163,13 @@ class TwoImagesModel(nn.Module):
     
 
 def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True, ris_option: str = 'RIS1'):
+                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
     'mode' columns is then transformed to [0,1,2] notation, where 0 stands for L-mode, 1 for H-mode and 2 for ELM
+
+    use_for_PhyDNet - if True, then simply cuts the first 11 rows to avoid NaNs in PhyDNet
     '''
     if ris_option not in ['RIS1', 'RIS2', 'both']:
         raise Exception("Invalid ris_option. Choose from 'RIS1', 'RIS2', 'both'")
@@ -178,6 +180,8 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
         df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         df['shot'] = shot
         df = df.iloc[:-100] #Drop last 100 rows, because sometimes RIS cameras don't end at the same time :C
+        if use_for_PhyDNet:
+            df = df.iloc[11:]
         shot_df = pd.concat([shot_df, df], axis=0)
 
 
@@ -396,16 +400,16 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     
                     #F1 metric
                     writer.add_scalar(f'{phase}ing F1 metric',
-                                    F1Score(task="multiclass", num_classes=3).to(device)(preds, ground_truth),
+                                    F1Score(task="multiclass", num_classes=outputs.size()[1]).to(device)(preds, ground_truth),
                                     epoch * len(dataloaders[phase]) + running_batch)
                     
                     #Precision recall
                     writer.add_scalar(f'{phase}ing macro Precision', 
-                                        MulticlassPrecision(num_classes=3).to(device)(preds, ground_truth),
+                                        MulticlassPrecision(num_classes=outputs.size()[1]).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
                     writer.add_scalar(f'{phase}ing macro Recall', 
-                                        MulticlassRecall(num_classes=3).to(device)(preds, ground_truth),
+                                        MulticlassRecall(num_classes=outputs.size()[1]).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
             if phase == 'train':
