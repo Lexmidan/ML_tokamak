@@ -324,8 +324,7 @@ class Reshape(nn.Module):
 
 def split_df(df, shots, shots_for_training, shots_for_testing, 
              shots_for_validation, signal_name, use_ELMs=True, no_L_mode = False,
-             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False,
-             test_df_contains_val_df=True):
+             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False):
 
     """
     Splits the dataframe into train, test, and validation sets and scales the data.
@@ -364,9 +363,10 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
                          'mcHFS': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
                          'mcLFS': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
                          'mcTOP': f'{path}/data/mirnov_coil_signal_{sampling_freq}kHz', 
-                         'divlp': f'{path}/data/langmuir_probe_signal_{sampling_freq}kHz'}
+                         'divlp': f'{path}/data/langmuir_probe_signal_{sampling_freq}kHz',
+                         'mc_h_alpha': f'{path}/data/mirnov_h_alpha_signal_{sampling_freq}kHz'}
     
-    if signal_name not in ['divlp', 'mc', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha']:
+    if signal_name not in ['divlp', 'mc', 'mcDIV', 'mcHFS', 'mcLFS', 'mcTOP', 'h_alpha', 'mc_h_alpha']:
             raise ValueError(f'{signal_name} is not a valid signal name. Please use one of the following: divlp, mc, h_alpha')
     
     #Create a dataframe with all the shots
@@ -468,11 +468,7 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
     
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
-
-    if test_df_contains_val_df:
-        test_df = shot_df[~shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
-    else:
-        test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
+    test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
 
     return shot_df, test_df, val_df, train_df
 
@@ -522,7 +518,7 @@ class SignalDataset(Dataset):
         shot_num = self.df.iloc[idx]['shot']
         return {'label': label, 
                 'time': time, 
-                f'{self.signal_name}': signal_window.astype(float), 
+                f'{self.signal_name}': signal_window, 
                 'shot': shot_num.astype(int)}
 
 
@@ -534,11 +530,18 @@ class MultipleMirnovCoilsDataset(Dataset):
 
     '''
 
-    def __init__(self, df, window, dpoints_in_future=160):
+    def __init__(self, df, window, dpoints_in_future=160, h_alpha_instead_mcLFS=False):
+        
         self.df = df
+        self.columns = ['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']
         self.window = window
         self.dpoints_in_future = dpoints_in_future
         self.label_column = 'soft_label' if 'soft_label' in self.df.columns else 'mode'
+        self.signal_name = 'mc'
+
+        if h_alpha_instead_mcLFS:
+            self.signal_name = 'mc_h_alpha'
+            self.columns = ['mcDIV', 'mcHFS', 'h_alpha', 'mcTOP']
     def __len__(self):
         return len(self.df)
 
@@ -551,14 +554,13 @@ class MultipleMirnovCoilsDataset(Dataset):
             signal_window = torch.full((self.window, 4), 0.0)
         else:
             signal_window = torch.tensor(self.df.iloc[idx-(self.window-self.dpoints_in_future) : \
-                                                       idx+self.dpoints_in_future]
-                                         [['mcDIV', 'mcHFS', 'mcLFS', 'mcTOP']].to_numpy())
+                                                       idx+self.dpoints_in_future][self.columns].to_numpy())
         signal_window = signal_window.transpose(0, 1) #so batch shape corresponds to [batch_size, n_channels, window]
 
         label = torch.tensor(self.df.iloc[idx][self.label_column], dtype=torch.float) 
         time = self.df.iloc[idx]['time']
         shot_num = self.df.iloc[idx]['shot']
-        return {'label': label, 'time': time, 'mc': signal_window, 'shot': shot_num}
+        return {'label': label, 'time': time, self.signal_name: signal_window, 'shot': shot_num.astype(int)}
 
 	
 def get_dloader(df: pd.DataFrame(), batch_size: int = 32, 
@@ -577,7 +579,6 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
     Returns:  
         dataloader: dloader, which returns each class with the same probability
     """
-
     if shuffle and balance_data:
         raise Exception("Can't use data shuffling and balancing together")
     
@@ -586,6 +587,11 @@ def get_dloader(df: pd.DataFrame(), batch_size: int = 32,
         dataset = MultipleMirnovCoilsDataset(df, 
                                              window=signal_window, 
                                              dpoints_in_future=dpoints_in_future)
+    elif signal_name == 'mc_h_alpha':
+        dataset = MultipleMirnovCoilsDataset(df, 
+                                             window=signal_window, 
+                                             dpoints_in_future=dpoints_in_future,
+                                             h_alpha_instead_mcLFS=True)
     else:
         dataset = SignalDataset(df, 
                                 window=signal_window, 

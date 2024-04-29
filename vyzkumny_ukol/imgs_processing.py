@@ -7,7 +7,7 @@ import pandas as pd
 from pathlib import Path
 from PIL import Image
 from typing import Tuple  
-from tqdm.auto import tqdm
+from tqdm import tqdm
 cdb = client.CDBClient()
 os.chdir("/compass/Shared/Users/bogdanov/vyzkumny_ukol")
 

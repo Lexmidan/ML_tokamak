@@ -371,7 +371,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
                     #TODO: inputs.type. 
                     _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
-                    loss = criterion(outputs, labels.long())
+                    loss = criterion(outputs, labels.long() if len(labels.size())==1 else labels)
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -468,6 +468,7 @@ def test_model(run_path,
         batch_index +=1
         outputs, y_hat, confidence = images_to_probs(model, batch[signal_name].to(device).float())
         y_hat = torch.tensor(y_hat)
+        #Here I use if statement, because sometimes the model returns 2D tensor with soft labels
         y_df = torch.cat((y_df.int(), batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1]), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
 
@@ -592,6 +593,10 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
     for shot in tqdm(shots):
         pred_for_shot = results_df[results_df['shot']==shot]
 
+        if len(pred_for_shot)==0:
+            print(f'Shot {shot} not found in the results_df. Probably L-mode was removed from the dataset, and shot {shot} was L-mode only shot.')
+            continue
+
         metrics['shot'].append(shot)
 
         if num_classes==3:
@@ -603,7 +608,7 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
         labels_tensor = torch.tensor(pred_for_shot['label'].values.astype(int))
         
         #Confusion matrix
-        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=3)
+        confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=num_classes)
         confusion_matrix_metric.update(preds_tensor, labels_tensor)
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
 
@@ -613,28 +618,36 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             #It should be by how the split_df() function works
             pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
 
-            conf_time_ax.plot(pred_for_shot_ris1['time'],softmax_out[:len(pred_for_shot_ris1),1], label='H-mode Confidence RIS1')
-            conf_time_ax.plot(pred_for_shot_ris2['time'],softmax_out[len(pred_for_shot_ris1):,1], label='H-mode Confidence RIS2')
+            conf_time_ax.plot(pred_for_shot_ris1['time'],softmax_out[:len(pred_for_shot_ris1),1], 
+                              label='1st class Confidence RIS1', alpha=0.5)
+            conf_time_ax.plot(pred_for_shot_ris2['time'],softmax_out[len(pred_for_shot_ris1):,1], 
+                              label='1st class Confidence RIS2', alpha=0.5)
 
             conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
                           len(pred_for_shot_ris1[pred_for_shot_ris1['label']==1])*[1], 
-                          s=10, alpha=1, label='H-mode Truth', color='maroon')
+                          s=10, alpha=1, label='1st class Truth', color='maroon')
             
             kappa1 = cohen_kappa_score(pred_for_shot_ris1['prediction'], pred_for_shot_ris1['label'])
             kappa2 = cohen_kappa_score(pred_for_shot_ris2['prediction'], pred_for_shot_ris2['label'])
+            
+            #Convert to tensors (otherwise torchmetrics won't work)
+            y_hat_ris1 = torch.tensor(pred_for_shot_ris1['prediction'].values.astype(float))
+            y_ris1 = torch.tensor(pred_for_shot_ris1['label'].values.astype(int))
 
-            f1_ris1 = F1Score(task="multiclass", num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
-            f1_ris2 = F1Score(task="multiclass", num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+            y_hat_ris2 = torch.tensor(pred_for_shot_ris2['prediction'].values.astype(float))
+            y_ris2 = torch.tensor(pred_for_shot_ris2['label'].values.astype(int))
 
-            precision_ris1 = MulticlassPrecision(num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
-            precision_ris2 = MulticlassPrecision(num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+            #Metrics
+            f1_ris1 = F1Score(task="multiclass", num_classes=num_classes)(y_hat_ris1, y_ris1)
+            f1_ris2 = F1Score(task="multiclass", num_classes=num_classes)(y_hat_ris2, y_ris2)
 
-            recall_ris1 = MulticlassRecall(num_classes=num_classes)(pred_for_shot_ris1['label'], pred_for_shot_ris1['label'])
-            recall_ris2 = MulticlassRecall(num_classes=num_classes)(pred_for_shot_ris2['label'], pred_for_shot_ris2['label'])
+            precision_ris1 = MulticlassPrecision(num_classes=num_classes)(y_hat_ris1, y_ris1)
+            precision_ris2 = MulticlassPrecision(num_classes=num_classes)(y_hat_ris2, y_ris2)
 
-            conf_time_ax.set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa1:.2f}/{kappa2:.2f},\
-                                    F1 = {f1_ris1:.2f}/{f1_ris2:.2f}, Precision = {precision_ris1:.2f}/{precision_ris2:.2f},\
-                                    Recall = {recall_ris1:.2f}/{recall_ris2:.2f}')
+            recall_ris1 = MulticlassRecall(num_classes=num_classes)(y_hat_ris1, y_ris1)
+            recall_ris2 = MulticlassRecall(num_classes=num_classes)(y_hat_ris2, y_ris2)
+
+            conf_time_ax.set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa1:.2f}/{kappa2:.2f}, F1 = {f1_ris1:.2f}/{f1_ris2:.2f}, Precision = {precision_ris1:.2f}/{precision_ris2:.2f}, Recall = {recall_ris1:.2f}/{recall_ris2:.2f}')
             
             kappa = (kappa1 + kappa2)/2
             f1 = (f1_ris1 + f1_ris2)/2
@@ -647,14 +660,16 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
-                conf_time_ax.plot(pred_for_shot_ris1['time'],-softmax_out[:len(pred_for_shot_ris1),2], label='ELM Confidence RIS1')
-                conf_time_ax.plot(pred_for_shot_ris2['time'],-softmax_out[len(pred_for_shot_ris1):,2], label='ELM Confidence RIS2')
+                conf_time_ax.plot(pred_for_shot_ris1['time'],-softmax_out[:len(pred_for_shot_ris1),2], 
+                                  label='2d class Confidence RIS1', alpha=0.5)
+                conf_time_ax.plot(pred_for_shot_ris2['time'],-softmax_out[len(pred_for_shot_ris1):,2], 
+                                  label='2d class Confidence RIS2', alpha=0.5)
                 conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
                     len(pred_for_shot_ris1[pred_for_shot_ris1['label']==2])*[-1], 
                     s=10, alpha=1, label='ELM Truth', color='royalblue')
                 
         else:
-            conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='H-mode Confidence')
+            conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='Confidence')
 
             kappa = cohen_kappa_score(pred_for_shot['prediction'], pred_for_shot['label'])
             f1 = F1Score(task="multiclass", num_classes=num_classes)(preds_tensor, labels_tensor)
@@ -663,10 +678,9 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
 
             conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                             len(pred_for_shot[pred_for_shot['label']==1])*[1], 
-                            s=10, alpha=1, label='H-mode Truth', color='maroon')
+                            s=10, alpha=1, label='1st class Truth', color='maroon')
             
-            conf_time_ax.set_title(f'Shot {shot}, kappa = {kappa:.2f}, F1 = {f1:.2f},\
-                                    Precision = {precision:.2f}, Recall = {recall:.2f}')
+            conf_time_ax.set_title(f'Shot {shot}, kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
             
             metrics['f1'].append(f1)
             metrics['precision'].append(precision)
@@ -674,11 +688,10 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
-                conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='ELM Confidence')
+                conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='2d class Confidence')
                 conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                                 len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
                                 s=10, alpha=1, label='ELM Truth', color='royalblue')
-        metrics
 
         conf_time_ax.set_xlabel('t [ms]')
         conf_time_ax.set_ylabel('Confidence')
@@ -709,7 +722,7 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             combined_image_tensor = torchvision.transforms.ToTensor()(combined_image)
             writer.add_image(f'metrics_for_test_shot_{shot}', combined_image_tensor)
 
-    return f'{path}/data'
+    return metrics
 
 
 def matplotlib_figure_to_pil_image(fig):

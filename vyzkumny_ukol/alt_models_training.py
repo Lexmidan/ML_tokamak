@@ -34,12 +34,13 @@ def train_and_test_alt_model(signal_name = 'divlp',
                             weight_decay = 0.01,
                             use_ELMs = True,
                             no_L_mode = False,
-                            only_ELMs = False):
+                            only_ELMs = False,
+                            test_df_contains_val_df=True):
     """ 
     Trains and tests alternative model on given signal.
     """
     # Set up number of input channels. If mc, then we use all mirnov coils, else just one signal.
-    if signal_name == 'mc':
+    if signal_name == 'mc' or signal_name == 'mc_h_alpha':
         in_channels = 4
     else:
         in_channels = 1
@@ -56,6 +57,9 @@ def train_and_test_alt_model(signal_name = 'divlp',
     shots_for_testing = shot_for_alt[shot_for_alt['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_alt[shot_for_alt['used_as'] == 'val']['shot']
     shots_for_training = shot_for_alt[shot_for_alt['used_as'] == 'train']['shot']
+
+    if test_df_contains_val_df:
+        shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
 
     shot_df, test_df, val_df, train_df = am.split_df(path, shot_numbers, shots_for_training, shots_for_testing, 
                                                      shots_for_validation, use_ELMs=use_ELMs, 
@@ -144,11 +148,14 @@ def train_and_test_alt_model(signal_name = 'divlp',
                              num_classes=num_classes)
     
     metrics['prediction_df'].to_csv(f'{path}/runs/{timestamp}/prediction_df.csv')
-    cmc.per_shot_test(f'{path}/runs/{timestamp}', 
+    metrics_per_shot = cmc.per_shot_test(f'{path}/runs/{timestamp}', 
                       shots_for_testing, 
                       metrics['prediction_df'], 
                       writer=writer, 
                       num_classes=num_classes)
+    
+    metrics_per_shot = pd.DataFrame(metrics_per_shot)
+    metrics_per_shot.to_csv(f'{path}/runs/{timestamp}/metrics_per_shot.csv')
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 

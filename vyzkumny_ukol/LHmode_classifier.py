@@ -30,7 +30,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             learning_rate_max = 0.01,
                             comment_for_model_name = f', 3 output classes',
                             random_seed = 42,
-                            augmentation = False):
+                            augmentation = False,
+                            test_df_contains_val_df=True):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -50,6 +51,9 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
     shots_for_training = shot_for_ris[shot_for_ris['used_as'] == 'train']['shot']
+
+    if test_df_contains_val_df:
+        shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
                                                                     shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option)
@@ -198,11 +202,16 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     #### Test the model############################################
     metrics = cmc.test_model(f'runs/{timestamp}_all_layers', model, test_dataloader,
                               comment='', writer=writer, signal_name='img', num_classes=num_classes)
+    
+    metrics['prediction_df'].to_csv(f'{path}/runs/{timestamp}_all_layers/prediction_df.csv')
 
-    img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
+    metrics_per_shot = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'],
                                 writer=writer, num_classes=num_classes)
     
+    metrics_per_shot = pd.DataFrame(metrics_per_shot)
+    metrics_per_shot.to_csv(f'{path}/runs/{timestamp}_all_layers/per_shot_metrics.csv')
+
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 
                         'Precision on test_dataset':metrics['precision'].tolist(), 

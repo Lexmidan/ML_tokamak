@@ -191,7 +191,7 @@ def evaluate(encoder, loader, device = torch.device("cuda:0"), batch_size = 1, d
 
     return total_mse/len(loader),  total_mae/len(loader), total_ssim/len(loader)
     
-def train_and_eval_PhyDNet(batch_size=8,eval_every=1,print_every=1,nepochs=20,data_range = 1.0,root='PhyDNet/data/'):
+def train_and_eval_PhyDNet(batch_size=8,eval_every=1, print_every=1, nepochs=20, data_range = 1.0, root='PhyDNet/data/'):
      # data range 0 to 1 - images normalized this way
     
     timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S ")
