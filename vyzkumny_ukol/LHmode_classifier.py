@@ -207,10 +207,11 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
     metrics_per_shot = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_all_layers/', 
                                 shots=shots_for_testing.values.tolist(), results_df=metrics['prediction_df'],
-                                writer=writer, num_classes=num_classes)
+                                writer=writer, num_classes=num_classes,
+                                two_images=ris_option=='both')
     
     metrics_per_shot = pd.DataFrame(metrics_per_shot)
-    metrics_per_shot.to_csv(f'{path}/runs/{timestamp}_all_layers/per_shot_metrics.csv')
+    metrics_per_shot.to_csv(f'{path}/runs/{timestamp}_all_layers/metrics_per_shot.csv')
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 

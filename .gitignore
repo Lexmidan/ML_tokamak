@@ -5,12 +5,13 @@ vyzkumny_ukol/process new imgs.ipynb
 ./vyzkumny_ukol/sandbox.ipynb
 /gamma_spice_sim
 /gamma_spice_sim*
-/
+
 /data 
 /saved_models
 cross_validation_of_RIS1_model
 cross_validation_of_combined_model
 vyzkumny_ukol/runs
+/recovery
 /runs
 /old_runs
 vyzkumny_ukol/old_runs

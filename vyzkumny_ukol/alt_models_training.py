@@ -51,7 +51,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
     comment_for_model_name = architecture  + comment_for_model_name
     
     # Load data
-    shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
+    shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv')
     shot_for_alt = shot_usage[shot_usage['used_for_alt']]
     shot_numbers = shot_for_alt['shot']
     shots_for_testing = shot_for_alt[shot_for_alt['used_as'] == 'test']['shot']

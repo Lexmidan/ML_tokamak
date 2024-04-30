@@ -654,9 +654,9 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             precision = (precision_ris1 + precision_ris2)/2
             recall = (recall_ris1 + recall_ris2)/2
 
-            metrics['f1'].append(f1)
-            metrics['precision'].append(precision)
-            metrics['recall'].append(recall)
+            metrics['f1'].append(f1.numpy().item().item())
+            metrics['precision'].append(precision.numpy().item())
+            metrics['recall'].append(recall.numpy().item())
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
@@ -682,9 +682,9 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             
             conf_time_ax.set_title(f'Shot {shot}, kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
             
-            metrics['f1'].append(f1)
-            metrics['precision'].append(precision)
-            metrics['recall'].append(recall)
+            metrics['f1'].append(f1.numpy().item())
+            metrics['precision'].append(precision.numpy().item())
+            metrics['recall'].append(recall.numpy().item())
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
