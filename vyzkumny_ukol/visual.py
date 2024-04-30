@@ -7,14 +7,12 @@ import torch
 from matplotlib.patches import Circle, Arc
 from IPython.display import display, clear_output
 from matplotlib.image import imread
-import matplotlib.image as mpimg
-from io import BytesIO
-from PIL import Image
+
 
 
 
 def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, zoom_signal, zoom_time, time_for_signal):
-    clear_output()
+
     try:
         with open(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/hparams.json', 'r') as f:
             hparams = json.load(f)
@@ -133,13 +131,13 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
         image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
 
-        signal_fig, signal_axs = plt.subplots(1, 2, figsize=(10*figure_horizontal_size, 5*figure_vertical_size))
+        img_fig, img_axs = plt.subplots(1, 2, figsize=(10*figure_horizontal_size, 5*figure_vertical_size))
         
-        for i, [ax, img] in enumerate(zip(signal_axs, [image1, image2]), 1):
+        for i, [ax, img] in enumerate(zip(img_axs, [image1, image2]), 1):
             ax.imshow(img)
             ax.set_title(f'RIS{i}')
             ax.axis('off')  # Turn off axes for all images in one go
-        signal_fig.suptitle(f'Shot {shot}, time {closest_time} ms, GT class: {pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0]}')
+        img_fig.suptitle(f'Shot {shot}, time {closest_time} ms, GT class: {pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0]}')
         
         #plt.close(img_fig)
 
@@ -184,7 +182,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
             signal_fig, signal_axs = plt.subplots(len(signal_columns), figsize=(10*figure_horizontal_size,6*figure_vertical_size), sharex=True)
             for signal_ax, col in zip(signal_axs, signal_columns):
                 percentile = signal_df[col].quantile(exp_decaying(zoom_signal)/1000)
-                tretile = signal_df[col].quantile(0.33)
+                tretile = signal_df[col].quantile(.33)
                 # Assuming you have data to plot related to 'col'
                 signal_ax.plot(signal_df['time'], signal_df[col])
                 signal_ax.set_ylabel(f'{col}')
@@ -202,11 +200,14 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
             signal_axs[-1].set_xlabel('Time [ms]')    
             plt.close(signal_fig)
         
-
         conf_time_ax.legend()
         plt.close(conf_time_fig)
-        plt.close(signal_fig)
+        display(conf_time_fig)
 
+        try:
+            display(img_fig)
+        except:
+            display(signal_fig)
     
     
 
