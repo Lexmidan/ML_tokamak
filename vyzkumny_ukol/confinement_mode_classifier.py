@@ -492,14 +492,22 @@ def test_model(run_path,
         if max_batch!=0 and batch_index>max_batch:
             break
 
+    if num_classes==3:
+        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
+        for i in range(softmax_out.shape[1]):
+            preds[f'prob_{i}'] = softmax_out[:,i].cpu().numpy()
+        preds.drop(columns=['L_logit','H_logit','ELM_logit'], inplace=True)
+        preds.drop(columns=['confidence'], inplace=True)
+    else:
+        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit']].values), dim=1)
+        for i in range(softmax_out.shape[1]):
+            preds[f'prob_{i}'] = softmax_out[:,i].cpu().numpy()
+        preds.drop(columns=['L_logit','H_logit'], inplace=True)
+        preds.drop(columns=['confidence'], inplace=True)
+            
+        
     if return_metrics:
         print('Processing metrics...')
-
-        if num_classes==3:
-            softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
-        else:
-            softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit']].values), dim=1)
-
         #Confusion matrix
         confusion_matrix_metric = MulticlassConfusionMatrix(num_classes=num_classes)
         confusion_matrix_metric.update(y_hat_df, y_df)

@@ -52,21 +52,14 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         display(fig)
         return
 
-    #Zoom in the time
-    pred_for_shot = pred_for_shot[(pred_for_shot['time'] >= time_for_signal - exp_decaying(zoom_time)) & (pred_for_shot['time'] <= time_for_signal + exp_decaying(zoom_time))] #Zoom in the time
-
-
-    #calculate "confidences" for the model
-    if 'ELM_logit' in pred_for_shot.columns:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
-    else:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit']].values), dim=1)
-
     #Get the metrics for the shot
     kappa, f1, precision, recall = metrics_per_shot[metrics_per_shot['shot']==shot][['kappa','f1','precision','recall']].values[0]
 
     #Create the main figure - confidence over time
     conf_time_fig, conf_time_ax = plt.subplots(figsize=(10*figure_horizontal_size,6*figure_vertical_size))
+
+    conf_time_ax.set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
+
 
     #If the model takes data from the shot twice (one for each RIS), then split the data. 
     if 'ris_option' in hparams and hparams['ris_option']=='both': 
@@ -75,9 +68,9 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
 
         #Plot confidence for the first class (it may be H-mode or ELM, depending on the model)
-        conf_time_ax.plot(pred_for_shot_ris1['time'],softmax_out[:len(pred_for_shot_ris1),1], 
+        conf_time_ax.plot(pred_for_shot_ris1['time'],pred_for_shot['prob_1'][:len(pred_for_shot_ris1)], 
                           label='1st class Confidence RIS1', alpha=0.5)
-        conf_time_ax.plot(pred_for_shot_ris2['time'],softmax_out[len(pred_for_shot_ris1):,1], 
+        conf_time_ax.plot(pred_for_shot_ris2['time'],pred_for_shot['prob_1'][len(pred_for_shot_ris1)], 
                           label='1st class Confidence RIS2', alpha=0.5)
         
         conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
@@ -91,10 +84,10 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
         #Plot confidence for the second class (it's alway ELM)
         if 'ELM_logit' in pred_for_shot.columns:
-            conf_time_ax.plot(pred_for_shot_ris1['time'],-softmax_out[:len(pred_for_shot_ris1),2], 
+            conf_time_ax.plot(pred_for_shot_ris1['time'],-pred_for_shot['prob_2'][:len(pred_for_shot_ris1)], 
                               label='2d class Confidence RIS1', alpha=0.5)
             
-            conf_time_ax.plot(pred_for_shot_ris2['time'],-softmax_out[len(pred_for_shot_ris1):,2], 
+            conf_time_ax.plot(pred_for_shot_ris2['time'],-pred_for_shot['prob_2'][len(pred_for_shot_ris1):], 
                               label='2d class Confidence RIS2', alpha=0.5)
             
             conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
@@ -103,7 +96,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
     #If the model takes data from the shot once, then plot the confidence directly
     else:
-        conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='1st class Confidence')
+        conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['prob_1'], label='1st class Confidence')
 
         conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                         len(pred_for_shot[pred_for_shot['label']==1])*[1], 
@@ -113,7 +106,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         conf_time_ax.vlines(time_for_signal, 0, 1, color='black', linestyle='--')
 
         if 'ELM_logit' in pred_for_shot.columns:
-            conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='2d class Confidence')
+            conf_time_ax.plot(pred_for_shot['time'],-pred_for_shot['prob_2'], label='2d class Confidence')
 
             conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                             len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
@@ -154,7 +147,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                             'mc_h_alpha': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_h_alpha_signal_{hparams["sampling_frequency"]}kHz'}
         
         signal_df = pd.read_csv(f'{signal_paths_dict[hparams["signal_name"]]}/shot_{shot}.csv')
-        signal_df = signal_df[(signal_df['time'] >= time_for_signal - exp_decaying(zoom_time)) & (signal_df['time'] <= time_for_signal + exp_decaying(zoom_time))]
+        #signal_df = signal_df[(signal_df['time'] >= time_for_signal - exp_decaying(zoom_time)) & (signal_df['time'] <= time_for_signal + exp_decaying(zoom_time))]
         signal_columns = [col for col in signal_df.columns if col not in ['time', 'mode']]
         
         #If the model is trained on only one signal, then plot it directly
@@ -167,6 +160,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
             signal_ax.set_ylabel(f'{signal_columns[0]}')
             signal_ax.set_xlabel('Time [ms]')
             signal_ax.set_ylim(-percentile, percentile)
+            signal_ax.set_xlim(time_for_signal - exp_decaying(zoom_signal), time_for_signal + exp_decaying(zoom_signal))
 
             #Plot the signal window on signal figure
             signal_ax.vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--', label='Signal window')
