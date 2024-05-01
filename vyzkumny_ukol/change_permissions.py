@@ -1,9 +1,9 @@
 import os
 import stat
-import tqdm
+from tqdm import tqdm
 
 def change_permissions(folder_path):
-    for root, dirs, files in tqdm(os.walk(folder_path)):
+    for root, dirs, files in os.walk(folder_path):
         if '.venv' in dirs:
             dirs.remove('.venv')
         for file in files:

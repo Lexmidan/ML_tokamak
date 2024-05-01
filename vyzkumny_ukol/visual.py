@@ -24,7 +24,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         return
     
     if 'last_fc' in path_to_run:
-        print(f"I don't save the prediction_df.csv for RIS models with only last fc trained, as it's always worse than the fully trained model.")
+        print(f"I don't save the prediction_df.csv for RIS models with only last fc trained as it's always worse than the fully trained model.")
         fig = shot_not_present(color='red')
         plt.close(fig)
         display(fig)
@@ -55,87 +55,104 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
     #Get the metrics for the shot
     kappa, f1, precision, recall = metrics_per_shot[metrics_per_shot['shot']==shot][['kappa','f1','precision','recall']].values[0]
 
-    #Create the main figure - confidence over time
-    conf_time_fig, conf_time_ax = plt.subplots(figsize=(10*figure_horizontal_size,6*figure_vertical_size))
-
-    conf_time_ax.set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
-
-
     #If the model takes data from the shot twice (one for each RIS), then split the data. 
     if 'ris_option' in hparams and hparams['ris_option']=='both': 
         #I assume, that the first half of the data is from RIS1 and the second half from RIS2. 
         #It should be by how the split_df() function works
         pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
 
+        #Create the main figure - confidence over time
+        conf_time_fig, conf_time_ax = plt.subplots(2, figsize=(10*figure_horizontal_size,9*figure_vertical_size), gridspec_kw={'height_ratios': [1, 1]})
+        conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
+
         #Plot confidence for the first class (it may be H-mode or ELM, depending on the model)
-        conf_time_ax.plot(pred_for_shot_ris1['time'],pred_for_shot['prob_1'][:len(pred_for_shot_ris1)], 
+        conf_time_ax[0].plot(pred_for_shot_ris1['time'],pred_for_shot['prob_1'][:len(pred_for_shot_ris1)], 
                           label='1st class Confidence RIS1', alpha=0.5)
-        conf_time_ax.plot(pred_for_shot_ris2['time'],pred_for_shot['prob_1'][len(pred_for_shot_ris1)], 
+        conf_time_ax[0].plot(pred_for_shot_ris2['time'],pred_for_shot['prob_1'][len(pred_for_shot_ris1):], 
                           label='1st class Confidence RIS2', alpha=0.5)
         
-        conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
+        conf_time_ax[0].scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
                       len(pred_for_shot_ris1[pred_for_shot_ris1['label']==1])*[1], 
                       s=10, alpha=1, label='1st class Truth', color='maroon')
         
-        conf_time_ax.vlines(time_for_signal, 0, 1, color='black', linestyle='--')
+        conf_time_ax[0].vlines(time_for_signal, 0, 1, color='black', linestyle='--')
+        conf_time_ax[0].set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
 
-
-        conf_time_ax.set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
 
         #Plot confidence for the second class (it's alway ELM)
         if 'ELM_logit' in pred_for_shot.columns:
-            conf_time_ax.plot(pred_for_shot_ris1['time'],-pred_for_shot['prob_2'][:len(pred_for_shot_ris1)], 
+            conf_time_ax[0].plot(pred_for_shot_ris1['time'],-pred_for_shot['prob_2'][:len(pred_for_shot_ris1)], 
                               label='2d class Confidence RIS1', alpha=0.5)
             
-            conf_time_ax.plot(pred_for_shot_ris2['time'],-pred_for_shot['prob_2'][len(pred_for_shot_ris1):], 
+            conf_time_ax[0].plot(pred_for_shot_ris2['time'],-pred_for_shot['prob_2'][len(pred_for_shot_ris1):], 
                               label='2d class Confidence RIS2', alpha=0.5)
             
-            conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
+            conf_time_ax[0].scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
                 len(pred_for_shot_ris1[pred_for_shot_ris1['label']==2])*[-1], 
                 s=10, alpha=1, label='ELM Truth', color='royalblue')
+        conf_time_ax[0].legend()
 
     #If the model takes data from the shot once, then plot the confidence directly
     else:
-        conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['prob_1'], label='1st class Confidence')
+        #If the model takes image or just 1 signal, then conf_time should have 2 rows. Else 5 rows
+        if 'ris_option' in hparams or not ('mc' in hparams['signal_name']):
+            num_graph_rows = 2
+            gridspec_kw = {'height_ratios': [1, 1]}
+        else:
+            num_graph_rows = 5
+            gridspec_kw = {'height_ratios': [4, 1, 1, 1, 1]}
 
-        conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
+        conf_time_fig, conf_time_ax = plt.subplots(num_graph_rows, figsize=(10*figure_horizontal_size,9*figure_vertical_size), gridspec_kw=gridspec_kw, sharex=True)
+        conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
+
+        conf_time_ax[0].plot(pred_for_shot['time'],pred_for_shot['prob_1'], label='1st class Confidence')
+
+        conf_time_ax[0].scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                         len(pred_for_shot[pred_for_shot['label']==1])*[1], 
                         s=10, alpha=1, label='1st class Truth', color='maroon')
 
-        conf_time_ax.set_title(f'Cohen kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
-        conf_time_ax.vlines(time_for_signal, 0, 1, color='black', linestyle='--')
+        conf_time_ax[0].set_title(f'Cohen kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
+        conf_time_ax[0].vlines(time_for_signal, 0, 1, color='black', linestyle='--')
 
         if 'ELM_logit' in pred_for_shot.columns:
-            conf_time_ax.plot(pred_for_shot['time'],-pred_for_shot['prob_2'], label='2d class Confidence')
+            conf_time_ax[0].plot(pred_for_shot['time'],-pred_for_shot['prob_2'], label='2d class Confidence')
 
-            conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
+            conf_time_ax[0].scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                             len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
                             s=10, alpha=1, label='ELM Truth', color='royalblue')
-
-    conf_time_ax.set_xlabel('Time [ms]')
-    conf_time_ax.set_ylabel('Confidence')
-
-    
 
     ###Handle the second plot. It is either a signal or an image
     #If it's an image, then load both images for RIS1/2 and display it. Hope that user will know which image the given model used
     if 'ris_option' in hparams:
+        conf_time_fig.subplots_adjust(hspace=0.5) #Add some space between the plots
+        conf_time_ax[0].set_xlabel('Time [ms]')
+        
         closest_time_str, closest_time = closest_decimal_time(time_for_signal)
-        image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
-        image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+        try:
+            image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
+            image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+                    # Create an inset axis for image1 on the left half of the second axes
+            ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
+            ax1.imshow(image1)
+            ax1.axis('off')  # Turn off axis for image1
 
-        img_fig, img_axs = plt.subplots(1, 2, figsize=(10*figure_horizontal_size, 5*figure_vertical_size))
-        
-        for i, [ax, img] in enumerate(zip(img_axs, [image1, image2]), 1):
-            ax.imshow(img)
-            ax.set_title(f'RIS{i}')
-            ax.axis('off')  # Turn off axes for all images in one go
-        img_fig.suptitle(f'Shot {shot}, time {closest_time} ms, GT class: {pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0]}')
-        
+            # Create an inset axis for image2 on the right half of the second axes
+            ax2 = conf_time_ax[1].inset_axes([0.5, 0, 0.5, 1])  # left, bottom, width, height
+            ax2.imshow(image2)
+            ax2.axis('off')  # Turn off axis for image2
+
+            # Optionally turn off the main axis
+            conf_time_ax[1].axis('off')
+            conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0]}')
+        except FileNotFoundError:
+            print(f"Can't find the image for shot {shot} and time {closest_time_str}.")
+    
         #plt.close(img_fig)
 
     #If it's a signal, then load the signal and display it
     else:
+        
+
         closest_time = pred_for_shot.iloc[(pred_for_shot['time'] - time_for_signal).abs().argmin()]
         signal_paths_dict = {'h_alpha': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/h_alpha_signal_{hparams["sampling_frequency"]}kHz', 
                             'mc': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz',
@@ -153,55 +170,49 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         #If the model is trained on only one signal, then plot it directly
         if len(signal_columns) == 1:
             percentile = signal_df[signal_columns[0]].quantile(exp_decaying(zoom_signal)/1000)
-            signal_fig = plt.figure(figsize=(10*figure_horizontal_size,6*figure_vertical_size))
-            signal_ax = signal_fig.add_subplot(1, 1, 1)
-            signal_ax.plot(signal_df['time'], signal_df[signal_columns[0]])
-            signal_ax.set_title(signal_columns[0])
-            signal_ax.set_ylabel(f'{signal_columns[0]}')
-            signal_ax.set_xlabel('Time [ms]')
-            signal_ax.set_ylim(-percentile, percentile)
-            signal_ax.set_xlim(time_for_signal - exp_decaying(zoom_signal), time_for_signal + exp_decaying(zoom_signal))
+            conf_time_ax[1].plot(signal_df['time'], signal_df[signal_columns[0]])
+            conf_time_ax[1].set_title(signal_columns[0])
+            conf_time_ax[1].set_ylabel(f'{signal_columns[0]}')
+            conf_time_ax[1].set_xlabel('Time [ms]')
+            conf_time_ax[1].set_ylim(-percentile, percentile)
+            #conf_time_ax[1].set_xlim(time_for_signal - exp_decaying(zoom_signal), time_for_signal + exp_decaying(zoom_signal))
 
             #Plot the signal window on signal figure
-            signal_ax.vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--', label='Signal window')
-            signal_ax.vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--')
+            conf_time_ax[1].vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency']-hparams['dpoints_in_future'], 0, percentile, color='green', linestyle='--', label='Signal window')
+            conf_time_ax[1].vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency']-hparams['dpoints_in_future'], 0, percentile, color='green', linestyle='--')
+            conf_time_ax[1].vlines(time_for_signal, 0, percentile, color='black', linestyle='--')
             #Plot the signal window on main figure
-            conf_time_ax.vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--', label='Signal window')
-            conf_time_ax.vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--')
+            conf_time_ax[0].vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency']-hparams['dpoints_in_future'], 0, 1, color='green', linestyle='--', label='Signal window')
+            conf_time_ax[0].vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency']-hparams['dpoints_in_future'], 0, 1, color='green', linestyle='--')
             
-            plt.close(signal_fig)
 
         #Else plot all signals (There may be 4 of them)
         else:
-            signal_fig, signal_axs = plt.subplots(len(signal_columns), figsize=(10*figure_horizontal_size,6*figure_vertical_size), sharex=True)
-            for signal_ax, col in zip(signal_axs, signal_columns):
+            for i, col in enumerate(signal_columns, 1):
                 percentile = signal_df[col].quantile(exp_decaying(zoom_signal)/1000)
-                tretile = signal_df[col].quantile(.33)
+                tretile = signal_df[col].quantile(.15)
                 # Assuming you have data to plot related to 'col'
-                signal_ax.plot(signal_df['time'], signal_df[col])
-                signal_ax.set_ylabel(f'{col}')
+                conf_time_ax[i].plot(signal_df['time'], signal_df[col])
+                conf_time_ax[i].set_ylabel(f'{col}')
                 #Plot the signal window on signal figure
-                signal_ax.vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--', label='Signal window')
-                signal_ax.vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--')
-                signal_ax.set_ylim(-percentile, percentile)
+                conf_time_ax[i].vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--', label='Signal window')
+                conf_time_ax[i].vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, percentile, color='green', linestyle='--')
+                conf_time_ax[i].set_ylim(-percentile, percentile)
+                conf_time_ax[i].vlines(time_for_signal, 0, percentile, color='black', linestyle='--')
                 if col=='h_alpha':
-                    signal_ax.set_ylim(tretile, percentile)
+                    conf_time_ax[i].set_ylim(tretile, percentile)
                 else:
-                    signal_ax.set_ylim(-percentile, percentile)
+                    conf_time_ax[i].set_ylim(-percentile, percentile)
             #Plot the signal window on main figure
-            conf_time_ax.vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--', label='Signal window')
-            conf_time_ax.vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--')
-            signal_axs[-1].set_xlabel('Time [ms]')    
-            plt.close(signal_fig)
+            conf_time_ax[0].vlines(time_for_signal-hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--', label='Signal window')
+            conf_time_ax[0].vlines(time_for_signal+hparams['signal_window']/hparams['sampling_frequency'], 0, 1, color='green', linestyle='--')
+            conf_time_ax[-1].set_xlabel('Time [ms]')    
         
-        conf_time_ax.legend()
+        conf_time_ax[0].set_ylabel('Confidence')
+        conf_time_ax[0].legend()
         plt.close(conf_time_fig)
         display(conf_time_fig)
 
-        try:
-            display(img_fig)
-        except:
-            display(signal_fig)
     
     
 
