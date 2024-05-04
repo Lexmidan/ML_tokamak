@@ -163,7 +163,7 @@ class TwoImagesModel(nn.Module):
     
 
 def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False):
+                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False, test_run: bool = False):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
@@ -207,6 +207,11 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
+
+    if test_run:
+        test_df = test_df.iloc[:6000]
+        val_df = val_df.iloc[:6000]
+        train_df = train_df.iloc[:6000]
 
     return shot_df, test_df, val_df, train_df
 
@@ -291,7 +296,7 @@ def images_to_probs(net, batch_of_imgs):
     # convert output probabilities to predicted class
     max_logit, class_prediction = torch.max(output, 1) 
     preds = np.squeeze(class_prediction.cpu().numpy())
-    return output, preds, [torch.nn.functional.softmax(el, dim=0)[i].item() for i, el in zip(preds, output)]
+    return output, preds, torch.nn.functional.softmax(output, dim=1)
 
 
 def plot_classes_preds(net, images, img_paths, labels, identificator):
@@ -466,12 +471,14 @@ def test_model(run_path,
     batch_index = 0 #iterator
     for batch in tqdm(test_dataloader, desc='Processing batches'):
         batch_index +=1
-        outputs, y_hat, confidence = images_to_probs(model, batch[signal_name].to(device).float())
+        outputs, y_hat, softmax_out = images_to_probs(model, batch[signal_name].to(device).float())
+        softmax_out = softmax_out.cpu()
         y_hat = torch.tensor(y_hat)
         #Here I use if statement, because sometimes the model returns 2D tensor with soft labels
         y_df = torch.cat((y_df.int(), batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1]), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
 
+        #That's simply mean  if shot is not explicitly given, then that's a RIS model, and it has shot number in the filename
         if 'shot' not in batch.keys():
             shot_numbers = [int(pattern.search(path).group(1)) for path in batch['path']]
         else:
@@ -480,31 +487,18 @@ def test_model(run_path,
         pred = pd.DataFrame({'shot': shot_numbers, 'prediction': y_hat.data, 
                             'label': batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1], 
                             'time':batch['time'], 
-                            'confidence': confidence,'L_logit': outputs[:,0].cpu(), 
-                            'H_logit': outputs[:,1].cpu()})
+                            'prob_0': softmax_out[:,0].cpu(), 
+                            'prob_1': softmax_out[:,1].cpu()})
         
         task = "binary" if num_classes==2 else "multiclass"
+
         if num_classes==3:
-            pred['ELM_logit'] = outputs[:,2].cpu()
+            pred['prob_2'] = softmax_out[:,2].cpu()
 
         preds = pd.concat([preds, pred], axis=0, ignore_index=True)
 
         if max_batch!=0 and batch_index>max_batch:
             break
-
-    if num_classes==3:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit','ELM_logit']].values), dim=1)
-        for i in range(softmax_out.shape[1]):
-            preds[f'prob_{i}'] = softmax_out[:,i].cpu().numpy()
-        preds.drop(columns=['L_logit','H_logit','ELM_logit'], inplace=True)
-        preds.drop(columns=['confidence'], inplace=True)
-    else:
-        softmax_out = torch.nn.functional.softmax(torch.tensor(preds[['L_logit','H_logit']].values), dim=1)
-        for i in range(softmax_out.shape[1]):
-            preds[f'prob_{i}'] = softmax_out[:,i].cpu().numpy()
-        preds.drop(columns=['L_logit','H_logit'], inplace=True)
-        preds.drop(columns=['confidence'], inplace=True)
-            
         
     if return_metrics:
         print('Processing metrics...')
@@ -555,7 +549,7 @@ def test_model(run_path,
         conf_matrix_img = conf_matrix_img.resize((new_conf_width, pr_img.height))
 
         # Create a new image with a white background
-        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_img.width + roc_img.width,\
+        combined_image = Image.new('RGB', (conf_matrix_img.width + pr_img.width + roc_img.width,
                                             roc_img.height))
 
         # Paste the saved images into the combined image
@@ -606,12 +600,6 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             continue
 
         metrics['shot'].append(shot)
-
-        if num_classes==3:
-            softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit','ELM_logit']].values), dim=1)
-        else:
-            softmax_out = torch.nn.functional.softmax(torch.tensor(pred_for_shot[['L_logit','H_logit']].values), dim=1)
-
         preds_tensor = torch.tensor(pred_for_shot['prediction'].values.astype(float))
         labels_tensor = torch.tensor(pred_for_shot['label'].values.astype(int))
         
@@ -621,14 +609,15 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
         conf_matrix_fig, conf_matrix_ax = confusion_matrix_metric.plot()
 
         conf_time_fig, conf_time_ax = plt.subplots(figsize=(10,6))
-        if two_images: #If the model takes data from the shot twice (one for each RIS), then split the data. 
+
+        pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
+        if two_images and len(pred_for_shot_ris2)!=0: #If the model takes data from the shot twice (one for each RIS), then split the data. 
             #I assume, that the first half of the data is from RIS1 and the second half from RIS2. 
             #It should be by how the split_df() function works
-            pred_for_shot_ris1, pred_for_shot_ris2 = split_into_two_monotonic_dfs(pred_for_shot)
-
-            conf_time_ax.plot(pred_for_shot_ris1['time'],softmax_out[:len(pred_for_shot_ris1),1], 
+            
+            conf_time_ax.plot(pred_for_shot_ris1['time'],pred_for_shot_ris1['prob_1'],
                               label='1st class Confidence RIS1', alpha=0.5)
-            conf_time_ax.plot(pred_for_shot_ris2['time'],softmax_out[len(pred_for_shot_ris1):,1], 
+            conf_time_ax.plot(pred_for_shot_ris2['time'],pred_for_shot_ris2['prob_1'], 
                               label='1st class Confidence RIS2', alpha=0.5)
 
             conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==1]['time'], 
@@ -662,22 +651,22 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             precision = (precision_ris1 + precision_ris2)/2
             recall = (recall_ris1 + recall_ris2)/2
 
-            metrics['f1'].append(f1.numpy().item().item())
+            metrics['f1'].append(f1.numpy().item())
             metrics['precision'].append(precision.numpy().item())
             metrics['recall'].append(recall.numpy().item())
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
-                conf_time_ax.plot(pred_for_shot_ris1['time'],-softmax_out[:len(pred_for_shot_ris1),2], 
+                conf_time_ax.plot(pred_for_shot_ris1['time'],-pred_for_shot_ris1['prob_2'], 
                                   label='2d class Confidence RIS1', alpha=0.5)
-                conf_time_ax.plot(pred_for_shot_ris2['time'],-softmax_out[len(pred_for_shot_ris1):,2], 
+                conf_time_ax.plot(pred_for_shot_ris2['time'],-pred_for_shot_ris2['prob_2'], 
                                   label='2d class Confidence RIS2', alpha=0.5)
                 conf_time_ax.scatter(pred_for_shot_ris1[pred_for_shot_ris1['label']==2]['time'], 
                     len(pred_for_shot_ris1[pred_for_shot_ris1['label']==2])*[-1], 
                     s=10, alpha=1, label='ELM Truth', color='royalblue')
                 
         else:
-            conf_time_ax.plot(pred_for_shot['time'],softmax_out[:,1], label='Confidence')
+            conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['prob_1'], label='Confidence')
 
             kappa = cohen_kappa_score(pred_for_shot['prediction'], pred_for_shot['label'])
             f1 = F1Score(task="multiclass", num_classes=num_classes)(preds_tensor, labels_tensor)
@@ -696,7 +685,7 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             metrics['kappa'].append(kappa)
 
             if num_classes==3:
-                conf_time_ax.plot(pred_for_shot['time'],-softmax_out[:,2], label='2d class Confidence')
+                conf_time_ax.plot(pred_for_shot['time'],-pred_for_shot['prob_2'], label='2d class Confidence')
                 conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==2]['time'], 
                                 len(pred_for_shot[pred_for_shot['label']==2])*[-1], 
                                 s=10, alpha=1, label='ELM Truth', color='royalblue')
@@ -778,6 +767,11 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
         dict: A dictionary containing the PR curve, ROC curve, PR AUC, and ROC AUC.
 
     """
+
+    #ensure both tensors are on cpu
+    y_true = y_true.cpu()
+    y_pred = y_pred.cpu()
+
     def binary_pr_roc_auc(y_true, y_pred):
         # Sort predictions and corresponding labels
         sorted_indices = torch.argsort(y_pred, descending=True)
@@ -863,6 +857,7 @@ def pr_roc_auc(y_true, y_pred, cmap='viridis', task='binary'):
             cb.ax.set_position([0.68 - i*0.05, pos.y0, 0.02, pos.height])
 
         #Create the ROC image
+
         fig_roc, ax_roc = plt.subplots(figsize=(10, 5))
         scatter_roc_L = ax_roc.scatter(L_fpr, L_recall, c=L_sorted_pred, cmap=cmaps[0], s=2)
         scatter_roc_H = ax_roc.scatter(H_fpr, H_recall, c=H_sorted_pred, cmap=cmaps[1], s=2)

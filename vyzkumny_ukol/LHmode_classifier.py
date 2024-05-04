@@ -31,7 +31,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             comment_for_model_name = f', 3 output classes',
                             random_seed = 42,
                             augmentation = False,
-                            test_df_contains_val_df=True):
+                            test_df_contains_val_df=True,
+                            test_run = False):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -45,7 +46,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
 
     #### Create dataloaders ########################################
-    shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv')
+    shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv')
     shot_for_ris = shot_usage[shot_usage['used_for_ris1'] if ris_option == 'RIS1' else shot_usage['used_for_ris2']]
     shot_numbers = shot_for_ris['shot']
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
@@ -55,8 +56,14 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     if test_df_contains_val_df:
         shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
 
+    if test_run:
+        shots_for_testing = shots_for_testing[:3]
+        shots_for_validation = shots_for_validation[:3]
+        shots_for_training = shots_for_training[:3]
+
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option)
+                                                                    shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option,
+                                                                    )
 
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
@@ -108,6 +115,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     model = cmc.train_model(pretrained_model, criterion, optimizer, exp_lr_scheduler, 
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs_for_fc, 
                         chkpt_path=model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'))
+
 
     hyperparameters = {
     'model': model.__class__.__name__,

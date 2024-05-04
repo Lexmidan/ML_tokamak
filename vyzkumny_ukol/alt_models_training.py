@@ -35,7 +35,8 @@ def train_and_test_alt_model(signal_name = 'divlp',
                             use_ELMs = True,
                             no_L_mode = False,
                             only_ELMs = False,
-                            test_df_contains_val_df=True):
+                            test_df_contains_val_df=True,
+                            test_run=False):
     """ 
     Trains and tests alternative model on given signal.
     """
@@ -65,7 +66,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
                                                      shots_for_validation, use_ELMs=use_ELMs, 
                                                      signal_name=signal_name, sampling_freq=sampling_freq, 
                                                      exponential_elm_decay=exponential_elm_decay, no_L_mode=no_L_mode,
-                                                     only_ELMs=only_ELMs)
+                                                     only_ELMs=only_ELMs, test_run=test_run)
 
 
     # Create dataloaders
