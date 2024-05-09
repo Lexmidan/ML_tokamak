@@ -324,8 +324,7 @@ class Reshape(nn.Module):
 
 def split_df(df, shots, shots_for_training, shots_for_testing, 
              shots_for_validation, signal_name, use_ELMs=True, no_L_mode = False,
-             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False,
-             test_run=False):
+             path=os.getcwd(), sampling_freq=300, exponential_elm_decay=False, only_ELMs=False):
 
     """
     Splits the dataframe into train, test, and validation sets and scales the data.
@@ -470,11 +469,6 @@ def split_df(df, shots, shots_for_training, shots_for_testing,
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
-
-    if test_run:
-        train_df = train_df[:4000]
-        val_df = val_df[:4000]
-        test_df = test_df[:4000]
 
     return shot_df, test_df, val_df, train_df
 

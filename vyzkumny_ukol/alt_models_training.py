@@ -58,6 +58,11 @@ def train_and_test_alt_model(signal_name = 'divlp',
     shots_for_testing = shot_for_alt[shot_for_alt['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_alt[shot_for_alt['used_as'] == 'val']['shot']
     shots_for_training = shot_for_alt[shot_for_alt['used_as'] == 'train']['shot']
+    
+    if test_run:
+        shots_for_testing = shots_for_testing[:5]
+        shots_for_validation = shots_for_validation[:5]
+        shots_for_training = shots_for_training[:5]
 
     if test_df_contains_val_df:
         shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
@@ -66,7 +71,7 @@ def train_and_test_alt_model(signal_name = 'divlp',
                                                      shots_for_validation, use_ELMs=use_ELMs, 
                                                      signal_name=signal_name, sampling_freq=sampling_freq, 
                                                      exponential_elm_decay=exponential_elm_decay, no_L_mode=no_L_mode,
-                                                     only_ELMs=only_ELMs, test_run=test_run)
+                                                     only_ELMs=only_ELMs)
 
 
     # Create dataloaders

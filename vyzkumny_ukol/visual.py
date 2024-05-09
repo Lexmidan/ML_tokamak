@@ -8,7 +8,11 @@ import torch
 from matplotlib.patches import Circle, Arc
 from IPython.display import display, clear_output
 from matplotlib.image import imread
+from functools import lru_cache
 
+@lru_cache
+def cached_read_csv(filepath, **kwargs):
+    return pd.read_csv(filepath, **kwargs)
 
 
 
@@ -31,7 +35,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         display(fig)
         return
 
-    preds_csv = pd.read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/prediction_df.csv')
+    preds_csv = cached_read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/prediction_df.csv')
     
 
 
@@ -55,8 +59,9 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
     #Get the metrics for the shot
     try:
-        metrics_per_shot = pd.read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/metrics_per_shot.csv')
+        metrics_per_shot = cached_read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/metrics_per_shot.csv', index_col=0)
         kappa, f1, precision, recall = metrics_per_shot[metrics_per_shot['shot']==shot][['kappa','f1','precision','recall']].values[0]
+        
     except FileNotFoundError:
         print(f"Can't find the metrics_per_shot.csv for run {path_to_run}.")
         kappa, f1, precision, recall = 99, 99, 99, 99
@@ -152,7 +157,10 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                 # Optionally turn off the main axis
                 conf_time_ax[1].axis('off')
                 if len(pred_for_shot) > 0:
-                    conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0]}')
+                    if len(pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values)>1:
+                        title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0] 
+                    else: title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values
+                    conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {title}')
                 else:
                     conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: N/A')
 
@@ -175,7 +183,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                             'divlp': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/langmuir_probe_signal_{hparams["sampling_frequency"]}kHz',
                             'mc_h_alpha': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_h_alpha_signal_{hparams["sampling_frequency"]}kHz'}
         
-        signal_df = pd.read_csv(f'{signal_paths_dict[hparams["signal_name"]]}/shot_{shot}.csv')
+        signal_df = cached_read_csv(f'{signal_paths_dict[hparams["signal_name"]]}/shot_{shot}.csv')
         #signal_df = signal_df[(signal_df['time'] >= time_for_signal - exp_decaying(zoom_time)) & (signal_df['time'] <= time_for_signal + exp_decaying(zoom_time))]
         signal_columns = [col for col in signal_df.columns if col not in ['time', 'mode']]
         
@@ -226,6 +234,11 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         conf_time_ax[0].legend()
         plt.close(conf_time_fig)
         display(conf_time_fig)
+        try:
+            print(metrics_per_shot)
+            print(metrics_per_shot[metrics_per_shot['kappa']!=0].describe()[['f1','precision','recall', 'kappa']])
+        except:
+            print('Metrics per shot not available')
 
     
     

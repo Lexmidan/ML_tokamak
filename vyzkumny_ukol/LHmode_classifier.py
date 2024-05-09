@@ -142,6 +142,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     metrics = cmc.test_model(f'runs/{timestamp}_last_fc', model, test_dataloader, comment='', 
                              writer=writer, num_classes=num_classes, signal_name='img')
 
+    metrics['prediction_df'].to_csv(f'{path}/runs/{timestamp}_last_fc/prediction_df.csv')
+
     img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
                                 shots=shots_for_testing.values.tolist(), 
                                 results_df=metrics['prediction_df'], 

@@ -163,7 +163,7 @@ class TwoImagesModel(nn.Module):
     
 
 def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False, test_run: bool = False):
+                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
@@ -181,7 +181,7 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
         df['shot'] = shot
         df = df.iloc[:-100] #Drop last 100 rows, because sometimes RIS cameras don't end at the same time :C
         if use_for_PhyDNet:
-            df = df.iloc[11:]
+            df = df.iloc[25:]
         shot_df = pd.concat([shot_df, df], axis=0)
 
 
@@ -207,11 +207,6 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
-
-    if test_run:
-        test_df = test_df.iloc[:6000]
-        val_df = val_df.iloc[:6000]
-        train_df = train_df.iloc[:6000]
 
     return shot_df, test_df, val_df, train_df
 
@@ -282,7 +277,21 @@ def imshow(inp, title=None):
     if title is not None:
         plt.title(title)
 
-
+def check_nan_on_row(row_data):
+    """
+    Check if any container on the row contains NaN values.
+    
+    Args:
+        row_data: List or array representing the data on the row.
+        
+    Returns:
+        bool: True if NaN is present, False otherwise.
+    """
+    for container in row_data:
+        if isinstance(container, (list, np.ndarray)):
+            if np.isnan(container).any():
+                return True
+    return False
 
 ################### Helping functions to track the model training #############
 
@@ -366,7 +375,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     ground_truth = labels
 
                 running_batch += 1
-                
+
                 # zero the parameter gradients
                 optimizer.zero_grad()
 
@@ -374,9 +383,17 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs) #2D tensor with shape Batchsize*len(modes)
-                    #TODO: inputs.type. 
-                    _, preds = torch.max(outputs, 1) #preds = 1D array of indicies of maximum values in row. ([2,1,2,1,2]) - third feature is largest in first sample, second in second...
+                    
+                    if torch.isnan(outputs).any():
+                        print(f'NaN values found in outputs in {phase} phase. Skipping this batch.')
+                        continue
+
+                    _, preds = torch.max(outputs, 1)
                     loss = criterion(outputs, labels.long() if len(labels.size())==1 else labels)
+
+                    if torch.isnan(loss):
+                        print(f'Loss is NaN in {phase} phase. Skipping this batch.')
+                        continue
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -466,6 +483,7 @@ def test_model(run_path,
     '''
     y_df = torch.tensor([])
     y_hat_df = torch.tensor([])
+    softmax_out_df = torch.tensor([])
     preds = pd.DataFrame([])
     pattern = re.compile(r'RIS[12]_(\d+)_t=')        
     batch_index = 0 #iterator
@@ -477,6 +495,7 @@ def test_model(run_path,
         #Here I use if statement, because sometimes the model returns 2D tensor with soft labels
         y_df = torch.cat((y_df.int(), batch['label'] if len(batch['label'].size())==1 else batch['label'].max(axis=1)[1]), dim=0)
         y_hat_df = torch.cat((y_hat_df, y_hat), dim=0)
+        softmax_out_df = torch.cat((softmax_out_df, softmax_out), dim=0)
 
         #That's simply mean  if shot is not explicitly given, then that's a RIS model, and it has shot number in the filename
         if 'shot' not in batch.keys():
@@ -495,7 +514,7 @@ def test_model(run_path,
         if num_classes==3:
             pred['prob_2'] = softmax_out[:,2].cpu()
 
-        preds = pd.concat([preds, pred], axis=0, ignore_index=True)
+        preds = pd.concat([preds, pred], axis=0, ignore_index=True)  
 
         if max_batch!=0 and batch_index>max_batch:
             break
@@ -514,7 +533,7 @@ def test_model(run_path,
         recall = MulticlassRecall(num_classes=num_classes)(y_hat_df, y_df)
 
         #Precision_recall and ROC curves are generated using the pr_roc_auc()
-        pr_roc = pr_roc_auc(y_df, softmax_out, task="binary" if num_classes==2 else 'ternary')
+        pr_roc = pr_roc_auc(y_df, softmax_out_df, task="binary" if num_classes==2 else 'ternary')
         pr_fig = pr_roc['pr_curve'][0]
         roc_fig = pr_roc['roc_curve'][0]
         roc_ax = pr_roc['roc_curve'][1]
