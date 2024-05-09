@@ -13,11 +13,10 @@ import pytorch_lightning as pl
 from torchvision import transforms
 from torchvision.io import read_image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall, MulticlassPrecisionRecallCurve, MulticlassROC
-from torchmetrics.classification import BinaryPrecision, BinaryRecall, F1Score, ConfusionMatrix, BinaryPrecisionRecallCurve, BinaryROC
+from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall
 from torch.optim import lr_scheduler
 import torch.nn as nn
-from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, f1_score
 import copy
 from torch.utils.tensorboard import SummaryWriter
 import time 
@@ -163,7 +162,7 @@ class TwoImagesModel(nn.Module):
     
 
 def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, shots_for_testing:list, shots_for_validation:list,
-                            use_ELMS: bool = True, ris_option: str = 'RIS1', use_for_PhyDNet: bool = False):
+                            use_ELMS: bool = True, ris_option: str = 'RIS1', exponential_elm_decay: bool=True):
     '''
     Takes path and lists of shots. Shots not specified in shots_for_testing
     and shots_for_validation will be used for training. Returns test_df, val_df, train_df 
@@ -180,9 +179,32 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
         df = pd.read_csv(f'{path}/data/LH_alpha/LH_alpha_shot_{shot}.csv')
         df['shot'] = shot
         df = df.iloc[:-100] #Drop last 100 rows, because sometimes RIS cameras don't end at the same time :C
-        if use_for_PhyDNet:
-            df = df.iloc[25:]
-        shot_df = pd.concat([shot_df, df], axis=0)
+        
+        if exponential_elm_decay and use_ELMS: #This creates soft labels for 2 classes
+            df['soft_label'] = df.apply(lambda x: [0, 1, 0] if x['mode'] == 'H-mode' else [1, 0, 0], axis=1)            
+            #Pre peak and post peak time
+            pre_time = 1
+            post_time = 2
+            if df['mode'].str.contains('ELM-peak').any():
+                for elm_peak in df[df['mode'] == 'ELM-peak']['time']:
+                    
+                    # Pre-ELM probabilities
+                    pre_indices = df.loc[df['time'].between(elm_peak-pre_time, elm_peak)].index
+                    if not pre_indices.empty:
+                        pre_elm_prob = np.exp(-5 * np.linspace(pre_time, 0, len(pre_indices)))
+                        for i, prob in zip(pre_indices, pre_elm_prob):
+                            df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][2]])]
+                    
+                    # Post-ELM probabilities
+                    post_indices = df.loc[df['time'].between(elm_peak, elm_peak+post_time)].index
+                    if not post_indices.empty:
+                        post_elm_prob = np.exp(-3 * np.linspace(0, post_time, len(post_indices)))
+                        for i, prob in zip(post_indices, post_elm_prob):
+                            df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
+                                                    np.max([prob, df.at[i, 'soft_label'][2]])]
+                            
+            shot_df = pd.concat([shot_df, df], axis=0)
 
 
     df_mode = shot_df['mode'].copy()
@@ -197,13 +219,15 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
         shot_df['filename'] = shot_df['filename'].str.replace('RIS1', 'RIS2')
 
     if ris_option == 'both':
-        shot_usage = pd.read_csv(f'{path}/data/shot_usage.csv', header=0)
+        shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv', header=0)
         shots_for_ris2 = shot_usage[shot_usage['used_for_ris2']]['shot'].to_list()
         df_ris2 = shot_df[shot_df['shot'].isin(shots_for_ris2)].copy()
         df_ris2['filename'] = df_ris2['filename'].str.replace('RIS1', 'RIS2')
         shot_df = pd.concat([shot_df, df_ris2], axis=0)
         shot_df = shot_df.reset_index(drop=True)
 
+
+                            
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
     train_df = shot_df[shot_df['shot'].isin(shots_for_training)].reset_index(drop=True)
@@ -340,7 +364,7 @@ def plot_classes_preds(net, images, img_paths, labels, identificator):
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
                  writer: SummaryWriter, dataset_sizes={'train':1, 'val':1}, num_epochs=25,
                  chkpt_path=os.getcwd(), signal_name='img', device = torch.device("cuda:0"),
-                 return_best_model = True):
+                 return_best_model = False):
 
     since = time.time()
 
@@ -526,11 +550,11 @@ def test_model(run_path,
         confusion_matrix_metric.update(y_hat_df, y_df)
         conf_matrix_fig, conf_matrix_ax  = confusion_matrix_metric.plot()
         #F1
-        f1 = F1Score(task=task, num_classes=num_classes)(y_hat_df, y_df)
+        f1 = f1_score(y_df, y_hat_df, average='binary' if num_classes==2 else 'micro')
 
         #Precision and recall
-        precision = MulticlassPrecision(num_classes=num_classes)(y_hat_df, y_df)
-        recall = MulticlassRecall(num_classes=num_classes)(y_hat_df, y_df)
+        precision = precision_score(y_df, y_hat_df, average='binary' if num_classes==2 else 'micro')
+        recall = recall_score(y_df, y_hat_df, average='binary' if num_classes==2 else 'micro')
 
         #Precision_recall and ROC curves are generated using the pr_roc_auc()
         pr_roc = pr_roc_auc(y_df, softmax_out_df, task="binary" if num_classes==2 else 'ternary')
@@ -643,8 +667,8 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
                           len(pred_for_shot_ris1[pred_for_shot_ris1['label']==1])*[1], 
                           s=10, alpha=1, label='1st class Truth', color='maroon')
             
-            kappa1 = cohen_kappa_score(pred_for_shot_ris1['prediction'], pred_for_shot_ris1['label'])
-            kappa2 = cohen_kappa_score(pred_for_shot_ris2['prediction'], pred_for_shot_ris2['label'])
+            kappa1 = cohen_kappa_score(pred_for_shot_ris1['label'], pred_for_shot_ris1['prediction'])
+            kappa2 = cohen_kappa_score(pred_for_shot_ris2['label'], pred_for_shot_ris2['prediction'])
             
             #Convert to tensors (otherwise torchmetrics won't work)
             y_hat_ris1 = torch.tensor(pred_for_shot_ris1['prediction'].values.astype(float))
@@ -654,14 +678,14 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             y_ris2 = torch.tensor(pred_for_shot_ris2['label'].values.astype(int))
 
             #Metrics
-            f1_ris1 = F1Score(task="multiclass", num_classes=num_classes)(y_hat_ris1, y_ris1)
-            f1_ris2 = F1Score(task="multiclass", num_classes=num_classes)(y_hat_ris2, y_ris2)
+            f1_ris1 = f1_score(y_ris1, y_hat_ris1, average='binary' if num_classes==2 else 'micro')
+            f1_ris2 = f1_score(y_ris2, y_hat_ris2, average='binary' if num_classes==2 else 'micro')
 
-            precision_ris1 = MulticlassPrecision(num_classes=num_classes)(y_hat_ris1, y_ris1)
-            precision_ris2 = MulticlassPrecision(num_classes=num_classes)(y_hat_ris2, y_ris2)
+            precision_ris1 = precision_score(y_ris1, y_hat_ris1, average='binary' if num_classes==2 else 'micro')
+            precision_ris2 = precision_score(y_ris2, y_hat_ris2, average='binary' if num_classes==2 else 'micro')
 
-            recall_ris1 = MulticlassRecall(num_classes=num_classes)(y_hat_ris1, y_ris1)
-            recall_ris2 = MulticlassRecall(num_classes=num_classes)(y_hat_ris2, y_ris2)
+            recall_ris1 = recall_score(y_ris1, y_hat_ris1, average='binary' if num_classes==2 else 'micro')
+            recall_ris2 = recall_score(y_ris2, y_hat_ris2, average='binary' if num_classes==2 else 'micro')
 
             conf_time_ax.set_title(f'Shot {shot}, RIS1/RIS2: kappa = {kappa1:.2f}/{kappa2:.2f}, F1 = {f1_ris1:.2f}/{f1_ris2:.2f}, Precision = {precision_ris1:.2f}/{precision_ris2:.2f}, Recall = {recall_ris1:.2f}/{recall_ris2:.2f}')
             
@@ -670,10 +694,10 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             precision = (precision_ris1 + precision_ris2)/2
             recall = (recall_ris1 + recall_ris2)/2
 
-            metrics['f1'].append(f1.numpy().item())
-            metrics['precision'].append(precision.numpy().item())
-            metrics['recall'].append(recall.numpy().item())
-            metrics['kappa'].append(kappa)
+            metrics['f1'].append(f1.item())
+            metrics['precision'].append(precision.item())
+            metrics['recall'].append(recall.item())
+            metrics['kappa'].append(kappa.item())
 
             if num_classes==3:
                 conf_time_ax.plot(pred_for_shot_ris1['time'],-pred_for_shot_ris1['prob_2'], 
@@ -687,10 +711,10 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
         else:
             conf_time_ax.plot(pred_for_shot['time'],pred_for_shot['prob_1'], label='Confidence')
 
-            kappa = cohen_kappa_score(pred_for_shot['prediction'], pred_for_shot['label'])
-            f1 = F1Score(task="multiclass", num_classes=num_classes)(preds_tensor, labels_tensor)
-            precision = MulticlassPrecision(num_classes=num_classes)(preds_tensor, labels_tensor)
-            recall = MulticlassRecall(num_classes=num_classes)(preds_tensor, labels_tensor)
+            kappa = cohen_kappa_score(pred_for_shot['prediction'].astype(int), pred_for_shot['label'])
+            f1 = f1_score(labels_tensor, preds_tensor, average='binary' if num_classes==2 else 'micro')
+            precision = precision_score(labels_tensor, preds_tensor, average='binary' if num_classes==2 else 'micro')
+            recall = recall_score(labels_tensor, preds_tensor, average='binary' if num_classes==2 else 'micro')
 
             conf_time_ax.scatter(pred_for_shot[pred_for_shot['label']==1]['time'], 
                             len(pred_for_shot[pred_for_shot['label']==1])*[1], 
@@ -698,10 +722,10 @@ def per_shot_test(path, shots: list, results_df: pd.DataFrame,
             
             conf_time_ax.set_title(f'Shot {shot}, kappa = {kappa:.2f}, F1 = {f1:.2f}, Precision = {precision:.2f}, Recall = {recall:.2f}')
             
-            metrics['f1'].append(f1.numpy().item())
-            metrics['precision'].append(precision.numpy().item())
-            metrics['recall'].append(recall.numpy().item())
-            metrics['kappa'].append(kappa)
+            metrics['f1'].append(f1.item())
+            metrics['precision'].append(precision.item())
+            metrics['recall'].append(recall.item())
+            metrics['kappa'].append(kappa.item())
 
             if num_classes==3:
                 conf_time_ax.plot(pred_for_shot['time'],-pred_for_shot['prob_2'], label='2d class Confidence')

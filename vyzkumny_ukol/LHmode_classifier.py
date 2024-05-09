@@ -32,7 +32,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             random_seed = 42,
                             augmentation = False,
                             test_df_contains_val_df=True,
-                            test_run = False):
+                            test_run = False,
+                            exponential_elm_decay=True):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -63,7 +64,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
                                                                     shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option,
-                                                                    )
+                                                                    exponential_elm_decay=exponential_elm_decay)
 
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
@@ -103,7 +104,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     criterion = nn.CrossEntropyLoss()
 
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min)
+    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=1e-4)
 
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_fc) #!!!
@@ -114,7 +115,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     #### Train the last fully connected layer########################
     model = cmc.train_model(pretrained_model, criterion, optimizer, exp_lr_scheduler, 
                         dataloaders, writer, dataset_sizes, num_epochs=num_epochs_for_fc, 
-                        chkpt_path=model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'))
+                        chkpt_path=model_path.with_name(f'{model_path.stem}_best_val_acc{model_path.suffix}'),
+                        return_best_model=False)
 
 
     hyperparameters = {
@@ -175,7 +177,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     criterion = nn.CrossEntropyLoss()
 
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min)
+    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=1e-4)
 
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_all_layers) #!!!

@@ -22,6 +22,7 @@ vyzkumny_ukol/routine copy.py
 vyzkumny_ukol/PhyDNet/runs
 
 
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

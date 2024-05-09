@@ -9,6 +9,7 @@ from matplotlib.patches import Circle, Arc
 from IPython.display import display, clear_output
 from matplotlib.image import imread
 from functools import lru_cache
+from torchvision.io import read_image
 
 @lru_cache
 def cached_read_csv(filepath, **kwargs):
@@ -139,27 +140,46 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
     if 'ris_option' in hparams:
         conf_time_fig.subplots_adjust(hspace=0.5) #Add some space between the plots
         conf_time_ax[0].set_xlabel('Time [ms]')
-        
-        closest_time_str, closest_time = closest_decimal_time(time_for_signal)
+
         try:
-                image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
-                image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
-                    # Create an inset axis for image1 on the left half of the second axes
-                ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
-                ax1.imshow(image1)
-                ax1.axis('off')  # Turn off axis for image1
+                closest_time_str, closest_time = closest_decimal_time(time_for_signal)
+                # Create an inset axis for image1 on the left half of the second axes
+                
 
                 # Create an inset axis for image2 on the right half of the second axes
-                ax2 = conf_time_ax[1].inset_axes([0.5, 0, 0.5, 1])  # left, bottom, width, height
-                ax2.imshow(image2)
-                ax2.axis('off')  # Turn off axis for image2
+                if 'model' in hparams.keys() and 'ClassifierRNN' in hparams['model']:
+                    
+                    conf_time_ax[0].vlines(time_for_signal - 4*4*0.2, 0, 1, color='green', linestyle='--', label='Signal window')
+                    image_combined = torch.tensor([])
+                    for i in range(4, 0, -1):
+                        closest_time_i_str, closest_time_i = closest_decimal_time(time_for_signal - i*0.2)
+                        image = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_i_str}.png').float()
+                        image_combined = torch.cat((image_combined, image[:,74:-74,144:-144].mean(dim=0, keepdim=True)), dim=2)
 
-                # Optionally turn off the main axis
-                conf_time_ax[1].axis('off')
+                    conf_time_ax[1].imshow(image_combined.permute(1,2,0).cpu().numpy())
+                    conf_time_ax[1].axis('tight')  # Tight fit around the data
+                    conf_time_ax[1].axis('off')
+
+                else:
+                    ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
+                    image1 = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
+                    image2 = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+
+                    ax1.imshow(image1)
+                    ax1.axis('off')  # Turn off axis for image1
+
+                    ax2 = conf_time_ax[1].inset_axes([0.5, 0, 0.5, 1])  # left, bottom, width, height
+                    ax2.imshow(image2)
+                    ax2.axis('off')  # Turn off axis for image2
+
+                    # Optionally turn off the main axis
+                    conf_time_ax[1].axis('off')
                 if len(pred_for_shot) > 0:
+
                     if len(pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values)>1:
                         title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0] 
                     else: title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values
+
                     conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {title}')
                 else:
                     conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: N/A')
