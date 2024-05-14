@@ -115,7 +115,8 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
             num_graph_rows = 5
             gridspec_kw = {'height_ratios': [4, 1, 1, 1, 1]}
 
-        conf_time_fig, conf_time_ax = plt.subplots(num_graph_rows, figsize=(10*figure_horizontal_size,9*figure_vertical_size), gridspec_kw=gridspec_kw, sharex=True)
+        conf_time_fig, conf_time_ax = plt.subplots(num_graph_rows, figsize=(10*figure_horizontal_size,9*figure_vertical_size), 
+                                                   gridspec_kw=gridspec_kw, sharex=True if hparams["signal_name"]!='imgs_input' else False)
         conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
 
 
@@ -150,6 +151,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                 if 'model' in hparams.keys() and 'ClassifierRNN' in hparams['model']:
                     
                     conf_time_ax[0].vlines(time_for_signal - 4*4*0.2, 0, 1, color='green', linestyle='--', label='Signal window')
+                    conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
                     image_combined = torch.tensor([])
                     for i in range(4, 0, -1):
                         closest_time_i_str, closest_time_i = closest_decimal_time(time_for_signal - i*0.2)
@@ -162,8 +164,8 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
                 else:
                     ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
-                    image1 = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
-                    image2 = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+                    image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
+                    image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
 
                     ax1.imshow(image1)
                     ax1.axis('off')  # Turn off axis for image1
@@ -176,9 +178,9 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                     conf_time_ax[1].axis('off')
                 if len(pred_for_shot) > 0:
 
-                    if len(pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values)>1:
-                        title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values[0] 
-                    else: title = pred_for_shot[pred_for_shot["time"]==closest_time]["label"].values
+                    if len(pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values)>1:
+                        title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values[0] 
+                    else: title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values
 
                     conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {title}')
                 else:

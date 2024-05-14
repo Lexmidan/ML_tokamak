@@ -14,11 +14,12 @@ import random
 import json
 import time
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall
-from PhyDNet.models.models_modified import ConvLSTM,PhyCell, ClassifierRNN
+from PhyDNet_models import ConvLSTM, PhyCell, ClassifierRNN
 from PhyDNet.data.moving_mnist import MovingMNIST
 from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, f1_score
 from PhyDNet.constrain_moments import K2M
 import torch.multiprocessing as mp
+import pytorch_lightning as pl
 
 import argparse
 from tqdm import tqdm
@@ -83,17 +84,19 @@ def train_on_batch(input_tensor, labels_tensor, classifier, criterion,
         outputs = classifier(input_tensor[:,ei,:,:,:], (ei==0) )
         loss += criterion(outputs, labels_tensor.long() if len(labels_tensor.size())==1 else labels_tensor)
 
-    #Errors should be more or less equals
+    #Errors should be more or less equal
     # Moment regularization  # encoder.phycell.cell_list[0].F.conv1.weight # size (nb_filters,in_channels,7,7)
+    constraints_loss = 0
     k2m = K2M([7,7]).to(device)
     for b in range(0,classifier.phycell.cell_list[0].input_dim):
         filters = classifier.phycell.cell_list[0].F.conv1.weight[:,b,:,:] # (nb_filters,7,7)     
         m = k2m(filters.double()) 
         m  = m.float()  
-        constraints_loss = criterion(m, constraints) # constrains is a precomputed matrix 
-        loss += constraints_loss
+        constraints_loss += nn.MSELoss()(m, constraints) # constrains is a precomputed matrix 
 
-    return outputs, loss/input_length, constraints_loss
+    loss += constraints_loss
+
+    return outputs, loss, constraints_loss
 
 
 def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders: dict,
@@ -151,13 +154,21 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
-                        total_constraints_loss['train'] = (0.995*(total_loss['train']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['train'])
+                        if total_batch['train'] == 1:
+                            total_loss['train'] = loss.item()
+                            total_constraints_loss['train'] = constraints_loss.item()
+                        else:
+                            total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
+                            total_constraints_loss['train'] = (0.995*(total_constraints_loss['train']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['train'])
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])                      
-                        total_constraints_loss['val'] = (0.995*(total_loss['val']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['val'])                      
-
+                        if total_batch['val'] == 1:
+                            total_loss['val'] = loss.item()
+                            total_constraints_loss['val'] = constraints_loss.item()
+                        else:
+                            total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])        
+                            total_constraints_loss['val'] = (0.995*(total_constraints_loss['val']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['val'])              
+                    
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == ground_truth.data) #How many correct answers
@@ -165,11 +176,15 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 
                 #tensorboard part
                 
-                if running_batch % int(len(dataloaders[phase])/10)==int(len(dataloaders[phase])/10)-1: 
+                if running_batch % int(len(dataloaders[phase])/1000)==int(len(dataloaders[phase])/1000)-1: 
                     # ...log the running loss
                     
                     #Training/validation loss
-                    writer.add_scalar(f'{phase}ing loss', total_loss[phase] / total_batch[phase],
+                    writer.add_scalar(f'{phase}ing loss', total_loss[phase],
+                                    total_batch[phase])
+                    
+                    #Training/validation loss
+                    writer.add_scalar(f'{phase}ing constr loss', total_constraints_loss[phase],
                                     total_batch[phase])
                     
                     #F1 metric
@@ -199,13 +214,15 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 writer.close()
                 if epoch_acc > best_acc:
                     best_acc = epoch_acc
-                    torch.save(model.state_dict(), chkpt_path)
+                    torch.save(model.state_dict(), chkpt_path.with_name(f'{chkpt_path.stem}_best_acc{chkpt_path.suffix}'))
 
+            torch.save(model.state_dict(), chkpt_path)
+            
         time_elapsed = time.time() - since
 
         # load best model weights
     if return_best_model:
-        model.load_state_dict(torch.load(chkpt_path))
+        model.load_state_dict(torch.load(chkpt_path.with_name(f'{chkpt_path.stem}_best_acc{chkpt_path.suffix}')))
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
     print(f'Best val Acc: {best_acc:4f}')
     return model
@@ -371,7 +388,7 @@ def test_model(run_path,
 
 
 def get_loader(df, batch_size=8, num_workers=16, n_frames_input=4, path=os.getcwd(), balance=True):
-    dataset = ImagesDataset(df, path, gray_scale=True,n_frames_input=n_frames_input)
+    dataset = ImagesDataset(df, path, gray_scale=True, n_frames_input=n_frames_input)
     if balance:
         mode_weight = (1/df['mode'].value_counts()).values
         sampler_weights = df['mode'].map(lambda x: mode_weight[x]).values
@@ -389,9 +406,11 @@ def get_loader(df, batch_size=8, num_workers=16, n_frames_input=4, path=os.getcw
 
 
 def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate_max=0.01, num_epochs=16,
-                           test_run=False, test_df_contains_val_df=False, n_frames_input=4, num_workers=16):
+                           test_run=False, test_df_contains_val_df=False, n_frames_input=4, num_workers=3,
+                           weight_decay=1e-2):
      # data range 0 to 1 - images normalized this way
-    
+
+    pl.seed_everything(42)
     timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S ")
     save_name = timestamp + ' phydnet'
     path = Path(os.getcwd())
@@ -415,7 +434,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
         shots_for_training = shots_for_training[2:4]
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=True, ris_option='RIS1', exponential_elm_decay=True)
+                                                                    shots_for_validation, use_ELMS=True, ris_option='RIS1', exponential_elm_decay=False)
 
     #Read article, see PhyDNet/constrain_moments.py
     constraints = torch.zeros((49,7,7)).to(device)
@@ -441,7 +460,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
     writer = SummaryWriter(f'PhyDNet/runs/{save_name}')
     criterion = nn.CrossEntropyLoss()
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(classifier.parameters(), lr=learning_rate_min, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(classifier.parameters(), lr=learning_rate_min, weight_decay=weight_decay)
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs) #!!!
     
@@ -450,6 +469,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
 
     hyperparameters = {
     'model': classifier.__class__.__name__,
+    'exponential_elm_decay':False,
     'n_frames_input': n_frames_input,
     'batch_size': batch_size,
     'num_epochs': num_epochs,
@@ -493,5 +513,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
 
 if __name__ == '__main__':
     mp.set_start_method('spawn')
-    train_and_eval_PhyDNet()
+    train_and_eval_PhyDNet(batch_size=7, learning_rate_min=0.001, learning_rate_max=0.01, num_epochs=12,
+                           test_run=False, test_df_contains_val_df=True, n_frames_input=4, num_workers=4,
+                           weight_decay=1e-5)
     print('Done')

@@ -33,7 +33,9 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             augmentation = False,
                             test_df_contains_val_df=True,
                             test_run = False,
-                            exponential_elm_decay=True):
+                            exponential_elm_decay=True,
+                            grayscale=False,
+                            weight_decay=1e-4):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -69,15 +71,15 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
                                       shuffle=False, num_workers=num_workers, 
-                                      augmentation=False)
+                                      augmentation=False, grayscale=grayscale)
 
     val_dataloader = cmc.get_dloader(val_df, path, batch_size, balance_data=True, 
                                      shuffle=False, num_workers=num_workers, 
-                                     augmentation=False)
+                                     augmentation=False, grayscale=grayscale)
 
     train_dataloader = cmc.get_dloader(train_df, path, batch_size, balance_data=True, 
                                        shuffle=False, num_workers=num_workers, 
-                                       augmentation=augmentation)
+                                       augmentation=augmentation, grayscale=grayscale)
 
     dataloaders = {'train':train_dataloader, 'val':val_dataloader}
     dataset_sizes = {x: len(dataloaders[x].dataset) for x in ['train', 'val']}
@@ -95,16 +97,15 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     pretrained_model.fc = nn.Linear(num_ftrs, num_classes) #3 classes: L-mode, H-mode, ELM
     pretrained_model = pretrained_model.to(device)
 
-    # Let's visualize the model
-    # sample_input = next(iter(train_dataloader))['img']
-    # print('Adding graph to tensorboard')
-    # writer.add_graph(pretrained_model, sample_input.float().to(device))
+    if grayscale:
+        pretrained_model.conv1.in_channels = 1
+        pretrained_model.conv1.weight = nn.Parameter(pretrained_model.conv1.weight.mean(dim=1, keepdim=True))
 
     # Loss function
     criterion = nn.CrossEntropyLoss()
 
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=weight_decay)
 
     # Decay LR by a factor of 0.1 every 7 epochs
     exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_fc) #!!!
@@ -134,7 +135,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     'num_classes': num_classes,
     'second_image': 'None',
     'augmentation': "applied" if augmentation else "no augmentation",
-    'random_seed': random_seed
+    'random_seed': random_seed,
+    'weight_decay':weight_decay
     }
     
     

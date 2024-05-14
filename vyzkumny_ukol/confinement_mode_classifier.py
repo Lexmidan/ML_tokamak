@@ -43,7 +43,7 @@ std = np.array([0.229, 0.224, 0.225])
 
 
 class ImageDataset(Dataset):
-    def __init__(self, annotations, img_dir, mean, std, augmentation = False):
+    def __init__(self, annotations, img_dir, mean, std, augmentation = False, grayscale = False):
         self.img_labels = annotations #pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.mean = mean
@@ -54,6 +54,11 @@ class ImageDataset(Dataset):
             transforms.RandomHorizontalFlip(),  # Example for additional augmentation
             transforms.RandomAffine(12, translate=(0.1, 0.1)),  # Random rotation between -12 and 12 degrees + 10% translation
             AddRandomNoise(0., 0.05),  # Add random noise
+            ])
+        elif grayscale:
+            self.transformations = transforms.Compose([
+            transforms.Grayscale(num_output_channels=1),
+            #transforms.ToTensor()
             ])
         else:
             self.transformations = transforms.Lambda(lambda x: x) #Identity transformation
@@ -204,7 +209,7 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
                             df.at[i, 'soft_label'] = [0, 1 - np.max([prob, df.at[i, 'soft_label'][2]]), 
                                                     np.max([prob, df.at[i, 'soft_label'][2]])]
                             
-            shot_df = pd.concat([shot_df, df], axis=0)
+        shot_df = pd.concat([shot_df, df], axis=0)
 
 
     df_mode = shot_df['mode'].copy()
@@ -238,7 +243,7 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
 def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32, 
                 balance_data: bool = True, shuffle: bool = True,
                 second_img_opt: str = None, num_workers: int = 0, 
-                augmentation: bool = False):
+                augmentation: bool = False, grayscale: bool = False):
     """
     Gets dataframe, path and batch size, returns "equiprobable" dataloader
 
@@ -264,7 +269,7 @@ def get_dloader(df: pd.DataFrame(), path: Path(), batch_size: int = 32,
     
     if second_img_opt == None:
         dataset = ImageDataset(annotations=df, img_dir=path, mean=mean, 
-                               std=std, augmentation=augmentation)
+                               std=std, augmentation=augmentation, grayscale=grayscale)
     elif second_img_opt == 'RIS2':
         dataset = TwoImagesDataset(annotations=df, img_dir=path, mean=mean, std=std, 
                                     second_img_opt='RIS2', augmentation=augmentation)
@@ -425,10 +430,16 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         optimizer.step()
 
                         total_batch['train'] += 1
-                        total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
+                        if total_batch['train'] == 1:
+                            total_loss['train'] = loss.item()
+                        else:
+                            total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
                     else:
                         total_batch['val'] += 1
-                        total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])                      
+                        if total_batch['val'] == 1:
+                            total_loss['val'] = loss.item()
+                        else:
+                            total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])                      
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
