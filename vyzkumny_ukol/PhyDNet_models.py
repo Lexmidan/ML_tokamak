@@ -325,7 +325,7 @@ class ClassifierRNN(torch.nn.Module):
 
         # image_and_phys = torch.cat((output1_avg_avg, output2_avg_avg, output3_avg_avg), dim=1) #[3,3,88,88]
 
-        classifier_input = torch.cat((decoded_Dp, decoded_Dr), dim=1) # [3, 704, 88, 88]
+        classifier_input = decoded_Dp + decoded_Dr # [3, 352, 88, 88]
 
         output = self.classifier(classifier_input)
 
@@ -335,21 +335,18 @@ class ClassifierRNN(torch.nn.Module):
 class CNNClassifier(nn.Module):
     def __init__(self):
         super(CNNClassifier, self).__init__()
-        self.conv1 = nn.Conv2d(704, 256, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(256)
-        self.conv2 = nn.Conv2d(256, 32, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(352, 128, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(128)
+        self.conv2 = nn.Conv2d(128, 32, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
         self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 11 * 11, 128)  # Adjust size based on the output of the last pooling layer
-        self.fc2 = nn.Linear(128, 3)
+        self.fc1 = nn.Linear(64 * 11 * 11, 64)  # Adjust size based on the output of the last pooling layer
+        self.fc2 = nn.Linear(64, 3)
 
     def forward(self, x):
-        x = self.pool(self.bn1(F.relu(self.conv1(x))))
-        x = self.pool(self.bn2(F.relu(self.conv2(x))))
-        x = self.pool(self.bn3(F.relu(self.conv3(x))))
+        x = self.pool(self.bn1(F.leaky_relu(self.conv1(x))))
+        x = self.pool(self.bn2(F.leaky_relu(self.conv2(x))))
         x = x.view(-1, 64 * 11 * 11)  # Flatten the tensor for the fully connected layer
-        x = F.relu(self.fc1(x))
+        x = F.leaky_relu(self.fc1(x))
         x = self.fc2(x)
         return F.softmax(x, dim=1)
