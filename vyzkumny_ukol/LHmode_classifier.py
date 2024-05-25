@@ -19,7 +19,7 @@ from torchvision.models.resnet import ResNet50_Weights, ResNet34_Weights, ResNet
 
 import confinement_mode_classifier as cmc
 
-def train_and_test_ris_model(ris_option = 'RIS1',
+def train_and_test_ris_model(ris_option = 'both',
                             pretrained_model = torchvision.models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1),
                             num_workers = 32,
                             num_epochs_for_fc = 10,
@@ -35,7 +35,8 @@ def train_and_test_ris_model(ris_option = 'RIS1',
                             test_run = False,
                             exponential_elm_decay=True,
                             grayscale=False,
-                            weight_decay=1e-4):
+                            weight_decay=1e-4,
+                            data_frac=1.0):
     
     """
     Trains a one ris model. The model is trained on RIS1 images or RIS2 images.
@@ -50,7 +51,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
 
     #### Create dataloaders ########################################
     shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv')
-    shot_for_ris = shot_usage[shot_usage['used_for_ris1'] if ris_option == 'RIS1' else shot_usage['used_for_ris2']]
+    shot_for_ris = shot_usage[shot_usage['used_for_ris2'] if ris_option == 'RIS2' else shot_usage['used_for_ris1']]
     shot_numbers = shot_for_ris['shot']
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
@@ -64,10 +65,41 @@ def train_and_test_ris_model(ris_option = 'RIS1',
         shots_for_validation = shots_for_validation[:3]
         shots_for_training = shots_for_training[:3]
 
+    #
+    shots_for_training = shots_for_training.sample(frac=data_frac, random_state=random_seed)
+
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
                                                                     shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option,
                                                                     exponential_elm_decay=exponential_elm_decay)
 
+    if ris_option == 'both':
+        shot_for_ris2 = shot_usage[shot_usage['used_for_ris2']]
+        shot_numbers_ris2 = shot_for_ris2['shot']
+        shots_for_testing_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'test']['shot']
+        shots_for_validation_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'val']['shot']
+        shots_for_training_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'train']['shot']
+
+        if test_df_contains_val_df:
+            shots_for_testing_ris2 = pd.concat([shots_for_testing_ris2, shots_for_validation_ris2])
+
+        if test_run:
+            shots_for_testing_ris2 = shots_for_testing_ris2[:3]
+            shots_for_validation_ris2 = shots_for_validation_ris2[:3]
+            shots_for_training_ris2 = shots_for_training_ris2[:3]
+
+        shots_for_training_ris2 = shots_for_training_ris2.sample(frac=data_frac, random_state=random_seed)
+
+        shot_df_ris2, test_df_ris2, val_df_ris2, train_df_ris2 = cmc.load_and_split_dataframes(path,shot_numbers_ris2, shots_for_training_ris2, shots_for_testing_ris2, 
+                                                                        shots_for_validation_ris2, use_ELMS=num_classes==3, ris_option='RIS2',
+                                                                        exponential_elm_decay=exponential_elm_decay)
+
+        test_df = pd.concat([test_df, test_df_ris2]).reset_index(drop=True)
+        val_df = pd.concat([val_df, val_df_ris2]).reset_index(drop=True)
+        train_df = pd.concat([train_df, train_df_ris2]).reset_index(drop=True)
+
+    shots_for_testing = pd.concat([shots_for_testing, shots_for_testing_ris2]).reset_index(drop=True)
+    shots_for_validation = pd.concat([shots_for_validation, shots_for_validation_ris2]).reset_index(drop=True)
+    shots_for_training = pd.concat([shots_for_training, shots_for_training_ris2]).reset_index(drop=True)
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
                                       shuffle=False, num_workers=num_workers, 
@@ -98,8 +130,30 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     pretrained_model = pretrained_model.to(device)
 
     if grayscale:
-        pretrained_model.conv1.in_channels = 1
-        pretrained_model.conv1.weight = nn.Parameter(pretrained_model.conv1.weight.mean(dim=1, keepdim=True))
+        # Luminance weights for RGB to grayscale conversion
+        weights_rgb_to_gray = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, 3, 1, 1).to(device)
+
+        # Get the original weights of the first conv layer
+        original_weights = pretrained_model.conv1.weight.data
+
+        # Compute the weighted sum of the RGB channels
+        grayscale_weights = (original_weights * weights_rgb_to_gray).sum(dim=1, keepdim=True)
+
+        # Update the first convolutional layer
+        pretrained_model.conv1 = nn.Conv2d(
+            in_channels=1,
+            out_channels=pretrained_model.conv1.out_channels,
+            kernel_size=pretrained_model.conv1.kernel_size,
+            stride=pretrained_model.conv1.stride,
+            padding=pretrained_model.conv1.padding,
+            bias=pretrained_model.conv1.bias is not None)
+
+        # Assign the new grayscale weights to the first conv layer
+        pretrained_model.conv1.weight = nn.Parameter(grayscale_weights)
+
+        # If there is a bias term, keep it unchanged
+        if pretrained_model.conv1.bias is not None:
+            pretrained_model.conv1.bias = nn.Parameter(pretrained_model.conv1.bias.data)
 
     # Loss function
     criterion = nn.CrossEntropyLoss()
@@ -108,7 +162,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=weight_decay)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_fc) #!!!
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, steps_per_epoch=dataset_sizes['train'], epochs=num_epochs_for_fc) #!!!
 
     # Model will be saved to this folder along with metrics and tensorboard scalars
     model_path = Path(f'{path}/runs/{timestamp}_last_fc/model.pt')
@@ -182,7 +236,7 @@ def train_and_test_ris_model(ris_option = 'RIS1',
     optimizer = torch.optim.AdamW(pretrained_model.parameters(), lr=learning_rate_min, weight_decay=1e-4)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs_for_all_layers) #!!!
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, steps_per_epoch=dataset_sizes['train'], epochs=num_epochs_for_all_layers) #!!!
 
     writer = SummaryWriter(f'runs/{timestamp}_all_layers')
     for param in model.parameters():

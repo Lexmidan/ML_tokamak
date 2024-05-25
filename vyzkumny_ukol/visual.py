@@ -28,13 +28,6 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         plt.close(fig)
         display(fig)
         return
-    
-    if 'last_fc' in path_to_run:
-        print(f"I don't save the prediction_df.csv for RIS models with only last fc trained as it's always worse than the fully trained model.")
-        fig = shot_not_present(color='red')
-        plt.close(fig)
-        display(fig)
-        return
 
     preds_csv = cached_read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/prediction_df.csv')
     

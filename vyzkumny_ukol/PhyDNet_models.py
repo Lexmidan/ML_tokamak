@@ -340,13 +340,13 @@ class CNNClassifier(nn.Module):
         self.conv2 = nn.Conv2d(128, 32, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(32)
         self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 11 * 11, 64)  # Adjust size based on the output of the last pooling layer
+        self.fc1 = nn.Linear(32 * 22 * 22, 64)  # Adjust size based on the output of the last pooling layer
         self.fc2 = nn.Linear(64, 3)
 
     def forward(self, x):
         x = self.pool(self.bn1(F.leaky_relu(self.conv1(x))))
         x = self.pool(self.bn2(F.leaky_relu(self.conv2(x))))
-        x = x.view(-1, 64 * 11 * 11)  # Flatten the tensor for the fully connected layer
+        x = x.view(-1, 32 * 22 * 22)  # Flatten the tensor for the fully connected layer
         x = F.leaky_relu(self.fc1(x))
         x = self.fc2(x)
         return F.softmax(x, dim=1)

@@ -158,16 +158,17 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                             total_loss['train'] = loss.item()
                             total_constraints_loss['train'] = constraints_loss.item()
                         else:
-                            total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
-                            total_constraints_loss['train'] = (0.995*(total_constraints_loss['train']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['train'])
+                            total_loss['train'] = (0.75*(total_loss['train']) + 0.25*loss.item())/(1-0.75**total_batch['train'])
+                            total_constraints_loss['train'] = (0.75*(total_constraints_loss['train']) + 0.25*constraints_loss.item())/(1-0.75**total_batch['train'])
                     else:
                         total_batch['val'] += 1
                         if total_batch['val'] == 1:
                             total_loss['val'] = loss.item()
                             total_constraints_loss['val'] = constraints_loss.item()
                         else:
-                            total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])        
-                            total_constraints_loss['val'] = (0.995*(total_constraints_loss['val']) + 0.005*constraints_loss.item())/(1-0.005**total_batch['val'])              
+                            total_loss['val'] = (0.75*(total_loss['val']) + 0.25*loss.item())/(1-0.75**total_batch['val'])        
+                            total_constraints_loss['val'] = (0.75*(total_constraints_loss['val']) + 0.25*constraints_loss.item())/(1-0.75**total_batch['val'])              
+                    
                     
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
@@ -176,7 +177,7 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                 
                 #tensorboard part
                 
-                if running_batch % int(len(dataloaders[phase])/1000)==int(len(dataloaders[phase])/1000)-1: 
+                if running_batch % int(len(dataloaders[phase])/400)==int(len(dataloaders[phase])/400)-1: 
                     # ...log the running loss
                     
                     #Training/validation loss
@@ -201,8 +202,8 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                                         MulticlassRecall(num_classes=outputs.size()[1]).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
                     
-            if phase == 'train':
-                scheduler.step()
+                if phase == 'train':
+                    scheduler.step() #scheduler.step(total_loss['val']) 
 
             epoch_loss = running_loss / dataset_sizes[phase]
             epoch_acc = running_corrects.double() / dataset_sizes[phase]
@@ -412,7 +413,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
 
     pl.seed_everything(42)
     timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S ")
-    save_name = timestamp + ' phydnet'
+    save_name = timestamp + ' phydnet LRO'
     path = Path(os.getcwd())
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -460,9 +461,8 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
     writer = SummaryWriter(f'PhyDNet/runs/{save_name}')
     criterion = nn.CrossEntropyLoss()
     # Observe that all parameters are being optimized
-    optimizer = torch.optim.AdamW(classifier.parameters(), lr=learning_rate_min, weight_decay=weight_decay)
-    # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, total_steps=num_epochs) #!!!
+    optimizer = torch.optim.AdamW(classifier.parameters(), lr=learning_rate_max, weight_decay=weight_decay)
+    exp_lr_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, patience=1) #!!!
     
     model_path = Path(f'PhyDNet/runs/{save_name}/model.pt')
 
@@ -513,7 +513,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
 
 if __name__ == '__main__':
     mp.set_start_method('spawn')
-    train_and_eval_PhyDNet(batch_size=7, learning_rate_min=0.001, learning_rate_max=0.01, num_epochs=12,
+    train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.001, learning_rate_max=0.01, num_epochs=12,
                            test_run=False, test_df_contains_val_df=True, n_frames_input=4, num_workers=4,
                            weight_decay=1e-5)
     print('Done')

@@ -223,15 +223,6 @@ def load_and_split_dataframes(path:Path, shots:list, shots_for_training:list, sh
     if ris_option == 'RIS2':
         shot_df['filename'] = shot_df['filename'].str.replace('RIS1', 'RIS2')
 
-    if ris_option == 'both':
-        shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv', header=0)
-        shots_for_ris2 = shot_usage[shot_usage['used_for_ris2']]['shot'].to_list()
-        df_ris2 = shot_df[shot_df['shot'].isin(shots_for_ris2)].copy()
-        df_ris2['filename'] = df_ris2['filename'].str.replace('RIS1', 'RIS2')
-        shot_df = pd.concat([shot_df, df_ris2], axis=0)
-        shot_df = shot_df.reset_index(drop=True)
-
-
                             
     test_df = shot_df[shot_df['shot'].isin(shots_for_testing)].reset_index(drop=True)
     val_df = shot_df[shot_df['shot'].isin(shots_for_validation)].reset_index(drop=True)
@@ -429,17 +420,17 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                         loss.backward()
                         optimizer.step()
 
+                        if total_batch['train'] == 0:
+                            total_loss['train'] = 0
+                        else:
+                            total_loss['train'] = (0.75*(total_loss['train']) + 0.25*loss.item())/(1-0.75**total_batch['train'])
                         total_batch['train'] += 1
-                        if total_batch['train'] == 1:
-                            total_loss['train'] = loss.item()
-                        else:
-                            total_loss['train'] = (0.995*(total_loss['train']) + 0.005*loss.item())/(1-0.005**total_batch['train'])
                     else:
-                        total_batch['val'] += 1
-                        if total_batch['val'] == 1:
-                            total_loss['val'] = loss.item()
+                        if total_batch['val'] == 0:
+                            total_loss['val'] = 0
                         else:
-                            total_loss['val'] = (0.995*(total_loss['val']) + 0.005*loss.item())/(1-0.005**total_batch['val'])                      
+                            total_loss['val'] = (0.75*(total_loss['val']) + 0.25*loss.item())/(1-0.75**total_batch['val'])                      
+                        total_batch['val'] += 1
 
                 # statistics
                 running_loss += loss.item() * inputs.size(0)
@@ -468,9 +459,9 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                     writer.add_scalar(f'{phase}ing macro Recall', 
                                         MulticlassRecall(num_classes=outputs.size()[1]).to(device)(preds, ground_truth),
                                         epoch * len(dataloaders[phase]) + running_batch)
-                    
-            if phase == 'train':
-                scheduler.step()
+                        
+                if phase == 'train':
+                    scheduler.step()
 
             epoch_loss = running_loss / dataset_sizes[phase]
             epoch_acc = running_corrects.double() / dataset_sizes[phase]
@@ -543,8 +534,6 @@ def test_model(run_path,
                             'time':batch['time'], 
                             'prob_0': softmax_out[:,0].cpu(), 
                             'prob_1': softmax_out[:,1].cpu()})
-        
-        task = "binary" if num_classes==2 else "multiclass"
 
         if num_classes==3:
             pred['prob_2'] = softmax_out[:,2].cpu()
