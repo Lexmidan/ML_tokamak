@@ -97,9 +97,9 @@ def train_and_test_ris_model(ris_option = 'both',
         val_df = pd.concat([val_df, val_df_ris2]).reset_index(drop=True)
         train_df = pd.concat([train_df, train_df_ris2]).reset_index(drop=True)
 
-    shots_for_testing = pd.concat([shots_for_testing, shots_for_testing_ris2]).reset_index(drop=True)
-    shots_for_validation = pd.concat([shots_for_validation, shots_for_validation_ris2]).reset_index(drop=True)
-    shots_for_training = pd.concat([shots_for_training, shots_for_training_ris2]).reset_index(drop=True)
+        shots_for_testing = pd.concat([shots_for_testing, shots_for_testing_ris2]).reset_index(drop=True)
+        shots_for_validation = pd.concat([shots_for_validation, shots_for_validation_ris2]).reset_index(drop=True)
+        shots_for_training = pd.concat([shots_for_training, shots_for_training_ris2]).reset_index(drop=True)
 
     test_dataloader = cmc.get_dloader(test_df, path, batch_size, balance_data=False, 
                                       shuffle=False, num_workers=num_workers, 
@@ -202,12 +202,14 @@ def train_and_test_ris_model(ris_option = 'both',
 
     metrics['prediction_df'].to_csv(f'{path}/runs/{timestamp}_last_fc/prediction_df.csv')
 
-    img_path = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
+    metrics_per_shot = cmc.per_shot_test(path=f'{path}/runs/{timestamp}_last_fc/', 
                                 shots=shots_for_testing.values.tolist(), 
                                 results_df=metrics['prediction_df'], 
                                 writer=writer,
                                 num_classes=num_classes,
                                 two_images=ris_option=='both')
+
+    pd.DataFrame(metrics_per_shot).to_csv(f'{path}/runs/{timestamp}_last_fc/metrics_per_shot.csv')
 
     one_digit_metrics = {'Accuracy on test_dataset': metrics['accuracy'], 
                         'F1 metric on test_dataset':metrics['f1'].tolist(), 

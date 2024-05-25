@@ -80,9 +80,9 @@ def train_on_batch(input_tensor, labels_tensor, classifier, criterion,
     # input_tensor : torch.Size([batch_size, input_length, channels, cols, rows])
     input_length  = input_tensor.size(1)
     loss = 0
-    for ei in range(input_length-1): 
-        outputs = classifier(input_tensor[:,ei,:,:,:], (ei==0) )
-        loss += criterion(outputs, labels_tensor.long() if len(labels_tensor.size())==1 else labels_tensor)
+    for ei in range(input_length): 
+        outputs = classifier(input_tensor[:,ei,:,:,:], (ei==0))
+        loss += 2**((ei-input_length)/input_length)*criterion(outputs, labels_tensor.long() if len(labels_tensor.size())==1 else labels_tensor)
 
     #Errors should be more or less equal
     # Moment regularization  # encoder.phycell.cell_list[0].F.conv1.weight # size (nb_filters,in_channels,7,7)
@@ -158,16 +158,16 @@ def train_model(model, criterion, optimizer, scheduler:lr_scheduler, dataloaders
                             total_loss['train'] = loss.item()
                             total_constraints_loss['train'] = constraints_loss.item()
                         else:
-                            total_loss['train'] = (0.75*(total_loss['train']) + 0.25*loss.item())/(1-0.75**total_batch['train'])
-                            total_constraints_loss['train'] = (0.75*(total_constraints_loss['train']) + 0.25*constraints_loss.item())/(1-0.75**total_batch['train'])
+                            total_loss['train'] = (0.85*(total_loss['train']) + 0.15*loss.item())/(1-0.85**total_batch['train'])
+                            total_constraints_loss['train'] = (0.85*(total_constraints_loss['train']) + 0.15*constraints_loss.item())/(1-0.85**total_batch['train'])
                     else:
                         total_batch['val'] += 1
                         if total_batch['val'] == 1:
                             total_loss['val'] = loss.item()
                             total_constraints_loss['val'] = constraints_loss.item()
                         else:
-                            total_loss['val'] = (0.75*(total_loss['val']) + 0.25*loss.item())/(1-0.75**total_batch['val'])        
-                            total_constraints_loss['val'] = (0.75*(total_constraints_loss['val']) + 0.25*constraints_loss.item())/(1-0.75**total_batch['val'])              
+                            total_loss['val'] = (0.85*(total_loss['val']) + 0.15*loss.item())/(1-0.85**total_batch['val'])        
+                            total_constraints_loss['val'] = (0.85*(total_constraints_loss['val']) + 0.15*constraints_loss.item())/(1-0.85**total_batch['val'])              
                     
                     
                 # statistics

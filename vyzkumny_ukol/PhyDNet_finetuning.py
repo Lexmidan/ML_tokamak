@@ -40,11 +40,11 @@ import PhyDNet_COMPASS as pdnt
 
 
 def finetune_phydnet(path_to_model, test_run=False, test_df_contains_val_df=True, batch_size=10, 
-                          num_workers=6, n_frames_input=4, save_name='PhyDNet_finetuning from 240515125351', 
-                          learning_rate_max=1e-4, weight_decay=1e-5, num_epochs_cnn=5, num_epochs_all_layers=10):
+                          num_workers=6, n_frames_input=4, save_name='PhyDNet, changed loss, reduceLRonPlateau', 
+                          learning_rate_max=1e-3, weight_decay=1e-5, num_epochs_cnn=5, num_epochs_all_layers=10, ris_option='RIS1'):
     
     pl.seed_everything(42)
-    timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S ")
+    timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S")
     save_name = timestamp + save_name
     path = Path(os.getcwd())
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
@@ -52,7 +52,7 @@ def finetune_phydnet(path_to_model, test_run=False, test_df_contains_val_df=True
 
     #### Create dataloaders ########################################
     shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv')
-    shot_for_ris = shot_usage[shot_usage['used_for_ris1']]
+    shot_for_ris = shot_usage[shot_usage['used_for_ris2'] if ris_option == 'RIS2' else shot_usage['used_for_ris1']]
     shot_numbers = shot_for_ris['shot']
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
@@ -62,13 +62,43 @@ def finetune_phydnet(path_to_model, test_run=False, test_df_contains_val_df=True
         shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
 
     if test_run:
-        shots_for_testing = shots_for_testing[2:4]
-        shots_for_validation = shots_for_validation[2:4]
-        shots_for_training = shots_for_training[2:4]
+        shots_for_testing = shots_for_testing[:3]
+        shots_for_validation = shots_for_validation[:3]
+        shots_for_training = shots_for_training[:3]
+
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=True, ris_option='RIS1', exponential_elm_decay=False)
+                                                                    shots_for_validation, use_ELMS=True, ris_option=ris_option,
+                                                                    exponential_elm_decay=False)
 
+    if ris_option == 'both':
+        shot_for_ris2 = shot_usage[shot_usage['used_for_ris2']]
+        shot_numbers_ris2 = shot_for_ris2['shot']
+        shots_for_testing_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'test']['shot']
+        shots_for_validation_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'val']['shot']
+        shots_for_training_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'train']['shot']
+
+        if test_df_contains_val_df:
+            shots_for_testing_ris2 = pd.concat([shots_for_testing_ris2, shots_for_validation_ris2])
+
+        if test_run:
+            shots_for_testing_ris2 = shots_for_testing_ris2[:3]
+            shots_for_validation_ris2 = shots_for_validation_ris2[:3]
+            shots_for_training_ris2 = shots_for_training_ris2[:3]
+
+
+        shot_df_ris2, test_df_ris2, val_df_ris2, train_df_ris2 = cmc.load_and_split_dataframes(path,shot_numbers_ris2, shots_for_training_ris2, shots_for_testing_ris2, 
+                                                                        shots_for_validation_ris2, use_ELMS=True, ris_option='RIS2',
+                                                                        exponential_elm_decay=False)
+
+        test_df = pd.concat([test_df, test_df_ris2]).reset_index(drop=True)
+        val_df = pd.concat([val_df, val_df_ris2]).reset_index(drop=True)
+        train_df = pd.concat([train_df, train_df_ris2]).reset_index(drop=True)
+
+        shots_for_testing = pd.concat([shots_for_testing, shots_for_testing_ris2]).reset_index(drop=True)
+        shots_for_validation = pd.concat([shots_for_validation, shots_for_validation_ris2]).reset_index(drop=True)
+        shots_for_training = pd.concat([shots_for_training, shots_for_training_ris2]).reset_index(drop=True)
+    
     #Read article, see PhyDNet/constrain_moments.py
     constraints = torch.zeros((49,7,7)).to(device)
     ind = 0
