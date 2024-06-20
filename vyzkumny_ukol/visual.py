@@ -1,3 +1,4 @@
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -136,48 +137,51 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         conf_time_ax[0].set_xlabel('Time [ms]')
 
         try:
-                closest_time_str, closest_time = closest_decimal_time(time_for_signal)
-                # Create an inset axis for image1 on the left half of the second axes
+            closest_time_str, closest_time = closest_decimal_time(time_for_signal)
+            # Create an inset axis for image1 on the left half of the second axes
+            
+
+            # Create an inset axis for image2 on the right half of the second axes
+            if 'model' in hparams.keys() and 'ClassifierRNN' in hparams['model']:
                 
+                conf_time_ax[0].vlines(time_for_signal - 4*4*0.2, 0, 1, color='green', linestyle='--', label='Signal window')
+                conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
+                image_combined = torch.tensor([])
+                for i in range(4, 0, -1):
+                    closest_time_i_str, closest_time_i = closest_decimal_time(time_for_signal - i*0.2)
+                    image = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_i_str}.png').float()
+                    image_combined = torch.cat((image_combined, image[:,74:-74,144:-144].mean(dim=0, keepdim=True)), dim=2)
 
-                # Create an inset axis for image2 on the right half of the second axes
-                if 'model' in hparams.keys() and 'ClassifierRNN' in hparams['model']:
-                    
-                    conf_time_ax[0].vlines(time_for_signal - 4*4*0.2, 0, 1, color='green', linestyle='--', label='Signal window')
-                    conf_time_ax[0].set_xlim(time_for_signal - exp_decaying(zoom_time), time_for_signal + exp_decaying(zoom_time))
-                    image_combined = torch.tensor([])
-                    for i in range(4, 0, -1):
-                        closest_time_i_str, closest_time_i = closest_decimal_time(time_for_signal - i*0.2)
-                        image = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_i_str}.png').float()
-                        image_combined = torch.cat((image_combined, image[:,74:-74,144:-144].mean(dim=0, keepdim=True)), dim=2)
+                conf_time_ax[1].imshow(image_combined.permute(1,2,0).cpu().numpy())
+                conf_time_ax[1].axis('tight')  # Tight fit around the data
+                conf_time_ax[1].axis('off')
 
-                    conf_time_ax[1].imshow(image_combined.permute(1,2,0).cpu().numpy())
-                    conf_time_ax[1].axis('tight')  # Tight fit around the data
-                    conf_time_ax[1].axis('off')
+            else:
+                ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
+                image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
+                image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
 
-                else:
-                    ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
-                    image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
-                    image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+                ax1.imshow(image1)
+                ax1.axis('off')  # Turn off axis for image1
 
-                    ax1.imshow(image1)
-                    ax1.axis('off')  # Turn off axis for image1
+                ax2 = conf_time_ax[1].inset_axes([0.5, 0, 0.5, 1])  # left, bottom, width, height
+                ax2.imshow(image2)
+                ax2.axis('off')  # Turn off axis for image2
 
-                    ax2 = conf_time_ax[1].inset_axes([0.5, 0, 0.5, 1])  # left, bottom, width, height
-                    ax2.imshow(image2)
-                    ax2.axis('off')  # Turn off axis for image2
+                # Optionally turn off the main axis
+                conf_time_ax[1].axis('off')
+            if len(pred_for_shot) > 0:
 
-                    # Optionally turn off the main axis
-                    conf_time_ax[1].axis('off')
-                if len(pred_for_shot) > 0:
+                if len(pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values)>1:
+                    title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values[0] 
+                else: title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values
 
-                    if len(pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values)>1:
-                        title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values[0] 
-                    else: title = pred_for_shot[abs(pred_for_shot["time"]-closest_time)<0.01]["label"].values
-
-                    conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {title}')
-                else:
-                    conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: N/A')
+                conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: {title}')
+            else:
+                conf_time_ax[1].set_title(f'Shot {shot}, time {closest_time} ms, GT class: N/A')
+            #
+            #display the image
+            #display(conf_time_fig)
 
         except FileNotFoundError:
             print(f"Can't find the image for shot {shot} and time {closest_time_str}.")
@@ -248,12 +252,15 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         conf_time_ax[0].set_ylabel('Confidence')
         conf_time_ax[0].legend()
         plt.close(conf_time_fig)
-        display(conf_time_fig)
-        try:
-            print(metrics_per_shot)
-            print(metrics_per_shot[metrics_per_shot['kappa']!=0].describe()[['f1','precision','recall', 'kappa']])
-        except:
-            print('Metrics per shot not available')
+        #display(conf_time_fig)
+    plt.close(conf_time_fig)
+    display(conf_time_fig)
+    
+    try:
+        print(metrics_per_shot)
+        print(metrics_per_shot[metrics_per_shot['kappa']!=0].describe()[['f1','precision','recall', 'kappa']])
+    except:
+        print('Metrics per shot not available')
 
     
     

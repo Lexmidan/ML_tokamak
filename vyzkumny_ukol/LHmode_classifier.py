@@ -71,7 +71,7 @@ def train_and_test_ris_model(ris_option = 'both',
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
                                                                     shots_for_validation, use_ELMS=num_classes==3, ris_option=ris_option,
                                                                     exponential_elm_decay=exponential_elm_decay)
-
+    
     if ris_option == 'both':
         shot_for_ris2 = shot_usage[shot_usage['used_for_ris2']]
         shot_numbers_ris2 = shot_for_ris2['shot']

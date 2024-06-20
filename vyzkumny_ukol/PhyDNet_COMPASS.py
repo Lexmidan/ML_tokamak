@@ -4,7 +4,6 @@ import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics.classification import BinaryPrecision, BinaryRecall, F1Score
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -408,19 +407,19 @@ def get_loader(df, batch_size=8, num_workers=16, n_frames_input=4, path=os.getcw
 
 def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate_max=0.01, num_epochs=16,
                            test_run=False, test_df_contains_val_df=False, n_frames_input=4, num_workers=3,
-                           weight_decay=1e-2):
+                           weight_decay=1e-2, ris_option='RIS1', save_name='PhyDNet'):
      # data range 0 to 1 - images normalized this way
 
     pl.seed_everything(42)
     timestamp = datetime.fromtimestamp(time.time()).strftime("%y-%m-%d, %H-%M-%S ")
-    save_name = timestamp + ' phydnet LRO'
+    save_name = timestamp + save_name
     path = Path(os.getcwd())
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
     #### Create dataloaders ########################################
     shot_usage = pd.read_csv(f'{path}/data/shot_usageNEW.csv')
-    shot_for_ris = shot_usage[shot_usage['used_for_ris1']]
+    shot_for_ris = shot_usage[shot_usage['used_for_ris2'] if ris_option == 'RIS2' else shot_usage['used_for_ris1']]
     shot_numbers = shot_for_ris['shot']
     shots_for_testing = shot_for_ris[shot_for_ris['used_as'] == 'test']['shot']
     shots_for_validation = shot_for_ris[shot_for_ris['used_as'] == 'val']['shot']
@@ -430,13 +429,43 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
         shots_for_testing = pd.concat([shots_for_testing, shots_for_validation])
 
     if test_run:
-        shots_for_testing = shots_for_testing[2:4]
-        shots_for_validation = shots_for_validation[2:4]
-        shots_for_training = shots_for_training[2:4]
+        shots_for_testing = shots_for_testing[:3]
+        shots_for_validation = shots_for_validation[:3]
+        shots_for_training = shots_for_training[:3]
+
 
     shot_df, test_df, val_df, train_df = cmc.load_and_split_dataframes(path,shot_numbers, shots_for_training, shots_for_testing, 
-                                                                    shots_for_validation, use_ELMS=True, ris_option='RIS1', exponential_elm_decay=False)
+                                                                    shots_for_validation, use_ELMS=True, ris_option=ris_option,
+                                                                    exponential_elm_decay=False)
 
+    if ris_option == 'both':
+        shot_for_ris2 = shot_usage[shot_usage['used_for_ris2']]
+        shot_numbers_ris2 = shot_for_ris2['shot']
+        shots_for_testing_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'test']['shot']
+        shots_for_validation_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'val']['shot']
+        shots_for_training_ris2 = shot_for_ris2[shot_for_ris2['used_as'] == 'train']['shot']
+
+        if test_df_contains_val_df:
+            shots_for_testing_ris2 = pd.concat([shots_for_testing_ris2, shots_for_validation_ris2])
+
+        if test_run:
+            shots_for_testing_ris2 = shots_for_testing_ris2[:3]
+            shots_for_validation_ris2 = shots_for_validation_ris2[:3]
+            shots_for_training_ris2 = shots_for_training_ris2[:3]
+
+
+        shot_df_ris2, test_df_ris2, val_df_ris2, train_df_ris2 = cmc.load_and_split_dataframes(path,shot_numbers_ris2, shots_for_training_ris2, shots_for_testing_ris2, 
+                                                                        shots_for_validation_ris2, use_ELMS=True, ris_option='RIS2',
+                                                                        exponential_elm_decay=False)
+
+        test_df = pd.concat([test_df, test_df_ris2]).reset_index(drop=True)
+        val_df = pd.concat([val_df, val_df_ris2]).reset_index(drop=True)
+        train_df = pd.concat([train_df, train_df_ris2]).reset_index(drop=True)
+
+        shots_for_testing = pd.concat([shots_for_testing, shots_for_testing_ris2]).reset_index(drop=True)
+        shots_for_validation = pd.concat([shots_for_validation, shots_for_validation_ris2]).reset_index(drop=True)
+        shots_for_training = pd.concat([shots_for_training, shots_for_training_ris2]).reset_index(drop=True)
+    
     #Read article, see PhyDNet/constrain_moments.py
     constraints = torch.zeros((49,7,7)).to(device)
     ind = 0
@@ -444,8 +473,6 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
         for j in range(0,7):
             constraints[ind,i,j] = 1
             ind +=1   
-
-
 
     train_loader = get_loader(train_df, batch_size=batch_size, num_workers=num_workers, n_frames_input=n_frames_input, path=path, balance=True)
     val_loader = get_loader(val_df, batch_size=batch_size, num_workers=num_workers, n_frames_input=n_frames_input, path=path, balance=True)
@@ -462,10 +489,9 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
     criterion = nn.CrossEntropyLoss()
     # Observe that all parameters are being optimized
     optimizer = torch.optim.AdamW(classifier.parameters(), lr=learning_rate_max, weight_decay=weight_decay)
-    exp_lr_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, patience=1) #!!!
+    exp_lr_scheduler = lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate_max, steps_per_epoch=dataset_sizes['train'], epochs=num_epochs) 
     
     model_path = Path(f'PhyDNet/runs/{save_name}/model.pt')
-
 
     hyperparameters = {
     'model': classifier.__class__.__name__,
@@ -513,7 +539,7 @@ def train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.0001, learning_rate
 
 if __name__ == '__main__':
     mp.set_start_method('spawn')
-    train_and_eval_PhyDNet(batch_size=8, learning_rate_min=0.001, learning_rate_max=0.01, num_epochs=12,
+    train_and_eval_PhyDNet(batch_size=10, learning_rate_max=0.001, num_epochs=12,
                            test_run=False, test_df_contains_val_df=True, n_frames_input=4, num_workers=4,
-                           weight_decay=1e-5)
+                           weight_decay=1e-5, save_name='phydnet, changed loss, onecycleLR')
     print('Done')
