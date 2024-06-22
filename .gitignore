@@ -1,12 +1,28 @@
 ############Those are mine
-/vyzkumny_ukol/ConfusionMatrix 3 epochs of training 26_11_2023.svg
 /vyzkumny_ukol/preds_vs_actuals
+vyzkumny_ukol/process new imgs.ipynb
+*process_data_for_alt_models.ipynb
+./vyzkumny_ukol/sandbox.ipynb
+/gamma_spice_sim
+/gamma_spice_sim*
+
 /data 
 /saved_models
-/vyzkumny_ukol/data
+cross_validation_of_RIS1_model
+cross_validation_of_combined_model
+vyzkumny_ukol/runs
+/recovery
 /runs
 /old_runs
-*.ckpt
+vyzkumny_ukol/old_runs
+/spice
+vyzkumny_ukol/routine.py
+vyzkumny_ukol/sandbox.ipynb
+vyzkumny_ukol/routine copy.py
+vyzkumny_ukol/PhyDNet/runs
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -17,7 +33,7 @@ PyTorch/Data
 # C extensions
 *.so
 *.png
-vyzkumny_ukol/runs
+
 ###########
 
 # Distribution / packaging
@@ -144,3 +160,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
