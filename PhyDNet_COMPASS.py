@@ -9,12 +9,10 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 import numpy as np
 from PIL import Image
-import random
 import json
 import time
 from torchmetrics.classification import MulticlassConfusionMatrix, F1Score, MulticlassPrecision, MulticlassRecall
 from PhyDNet_models import ConvLSTM, PhyCell, ClassifierRNN
-from PhyDNet.data.moving_mnist import MovingMNIST
 from sklearn.metrics import cohen_kappa_score, precision_score, recall_score, f1_score
 from PhyDNet.constrain_moments import K2M
 import torch.multiprocessing as mp
