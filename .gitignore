@@ -20,7 +20,9 @@ vyzkumny_ukol/routine.py
 vyzkumny_ukol/sandbox.ipynb
 vyzkumny_ukol/routine copy.py
 vyzkumny_ukol/PhyDNet/runs
+PhyDNet/runs
 
+*.pdf
 
 
 # Byte-compiled / optimized / DLL files
