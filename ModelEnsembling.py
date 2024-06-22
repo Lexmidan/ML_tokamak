@@ -180,6 +180,6 @@ def train_and_test_ensembled_model(ris_option = 'RIS1',
     writer.close()
 
 if __name__ == "__main__":
-    train_and_test_ensembled_model(one_ris_models_paths = {'RIS1':'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/24-02-25, 09-47-13 RIS1, 2 output classes_all_layers/model.pt', 
-                                                            'RIS2':'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/24-02-25, 11-15-07 RIS2, 2 output classes_all_layers/model.pt'})
+    train_and_test_ensembled_model(one_ris_models_paths = {'RIS1':'/compass/Shared/Users/bogdanov/ml_tokamak/runs/24-02-25, 09-47-13 RIS1, 2 output classes_all_layers/model.pt', 
+                                                            'RIS2':'/compass/Shared/Users/bogdanov/ml_tokamak/runs/24-02-25, 11-15-07 RIS2, 2 output classes_all_layers/model.pt'})
     print('Training finished.')

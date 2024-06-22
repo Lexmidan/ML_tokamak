@@ -21,7 +21,7 @@ def cached_read_csv(filepath, **kwargs):
 def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, zoom_signal, zoom_time, time_for_signal):
 
     try:
-        with open(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/hparams.json', 'r') as f:
+        with open(f'/compass/Shared/Users/bogdanov/ml_tokamak/runs/{path_to_run}/hparams.json', 'r') as f:
             hparams = json.load(f)
     except FileNotFoundError:
         print(f"Can't find the hparams. Chosen run is either irrelevant or the model is still training.")
@@ -30,7 +30,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         display(fig)
         return
 
-    preds_csv = cached_read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/prediction_df.csv')
+    preds_csv = cached_read_csv(f'/compass/Shared/Users/bogdanov/ml_tokamak/runs/{path_to_run}/prediction_df.csv')
     
 
 
@@ -54,7 +54,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
     #Get the metrics for the shot
     try:
-        metrics_per_shot = cached_read_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/runs/{path_to_run}/metrics_per_shot.csv', index_col=0)
+        metrics_per_shot = cached_read_csv(f'/compass/Shared/Users/bogdanov/ml_tokamak/runs/{path_to_run}/metrics_per_shot.csv', index_col=0)
         kappa, f1, precision, recall = metrics_per_shot[metrics_per_shot['shot']==shot][['kappa','f1','precision','recall']].values[0]
         
     except FileNotFoundError:
@@ -149,7 +149,7 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
                 image_combined = torch.tensor([])
                 for i in range(4, 0, -1):
                     closest_time_i_str, closest_time_i = closest_decimal_time(time_for_signal - i*0.2)
-                    image = read_image(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_i_str}.png').float()
+                    image = read_image(f'/compass/Shared/Users/bogdanov/ml_tokamak/imgs/{shot}/RIS1_{shot}_t={closest_time_i_str}.png').float()
                     image_combined = torch.cat((image_combined, image[:,74:-74,144:-144].mean(dim=0, keepdim=True)), dim=2)
 
                 conf_time_ax[1].imshow(image_combined.permute(1,2,0).cpu().numpy())
@@ -158,8 +158,8 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
 
             else:
                 ax1 = conf_time_ax[1].inset_axes([0, 0, 0.5, 1])  # left, bottom, width, height
-                image1 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
-                image2 = imread(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
+                image1 = imread(f'/compass/Shared/Users/bogdanov/ml_tokamak/imgs/{shot}/RIS1_{shot}_t={closest_time_str}.png')
+                image2 = imread(f'/compass/Shared/Users/bogdanov/ml_tokamak/imgs/{shot}/RIS2_{shot}_t={closest_time_str}.png')
 
                 ax1.imshow(image1)
                 ax1.axis('off')  # Turn off axis for image1
@@ -193,14 +193,14 @@ def visualize(path_to_run, shot,  figure_vertical_size, figure_horizontal_size, 
         
 
         closest_time = pred_for_shot.iloc[(pred_for_shot['time'] - time_for_signal).abs().argmin()]
-        signal_paths_dict = {'h_alpha': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/h_alpha_signal_{hparams["sampling_frequency"]}kHz', 
-                            'mc': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz',
-                            'mcDIV': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
-                            'mcHFS': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
-                            'mcLFS': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
-                            'mcTOP': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
-                            'divlp': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/langmuir_probe_signal_{hparams["sampling_frequency"]}kHz',
-                            'mc_h_alpha': f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/mirnov_h_alpha_signal_{hparams["sampling_frequency"]}kHz'}
+        signal_paths_dict = {'h_alpha': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/h_alpha_signal_{hparams["sampling_frequency"]}kHz', 
+                            'mc': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz',
+                            'mcDIV': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
+                            'mcHFS': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
+                            'mcLFS': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
+                            'mcTOP': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_coil_signal_{hparams["sampling_frequency"]}kHz', 
+                            'divlp': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/langmuir_probe_signal_{hparams["sampling_frequency"]}kHz',
+                            'mc_h_alpha': f'/compass/Shared/Users/bogdanov/ml_tokamak/data/mirnov_h_alpha_signal_{hparams["sampling_frequency"]}kHz'}
         
         signal_df = cached_read_csv(f'{signal_paths_dict[hparams["signal_name"]]}/shot_{shot}.csv')
         #signal_df = signal_df[(signal_df['time'] >= time_for_signal - exp_decaying(zoom_time)) & (signal_df['time'] <= time_for_signal + exp_decaying(zoom_time))]

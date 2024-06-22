@@ -14,7 +14,7 @@ import imgs_processing as imgs
 
 cdb = client.CDBClient()
 
-path = Path('/compass/Shared/Users/bogdanov/vyzkumny_ukol')
+path = Path('/compass/Shared/Users/bogdanov/ml_tokamak')
 os.chdir(path)
 
 def process_data_for_alt_models(shot_numbers, variant = 'seidl_2023', sampling_freq=300):

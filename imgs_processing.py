@@ -9,7 +9,7 @@ from PIL import Image
 from typing import Tuple  
 from tqdm import tqdm
 cdb = client.CDBClient()
-os.chdir("/compass/Shared/Users/bogdanov/vyzkumny_ukol")
+os.chdir("/compass/Shared/Users/bogdanov/ml_tokamak")
 
 def load_RIS_data(shot: int, ris: int) -> xr.DataArray:
     """Load RAW camera data from database
@@ -226,7 +226,7 @@ def process_shots(shots: list, use_discharge_duration: bool=True, just_names: bo
 
             #Appending columns with paths of the RIS imgs
             LorH['filename'] = np.array(ris1_names)
-            LorH.to_csv(f'/compass/Shared/Users/bogdanov/vyzkumny_ukol/data/LH_alpha/LH_alpha_shot_{shot}.csv')
+            LorH.to_csv(f'/compass/Shared/Users/bogdanov/ml_tokamak/data/LH_alpha/LH_alpha_shot_{shot}.csv')
             print(f'csv saved to ./LH_alpha_shot_{shot}.csv')
             
         except Exception as e:
