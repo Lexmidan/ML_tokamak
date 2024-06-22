@@ -5,7 +5,7 @@ vyzkumny_ukol/process new imgs.ipynb
 ./vyzkumny_ukol/sandbox.ipynb
 /gamma_spice_sim
 /gamma_spice_sim*
-
+/.vscode
 /data 
 /saved_models
 cross_validation_of_RIS1_model
@@ -33,6 +33,7 @@ PyTorch/Data
 # C extensions
 *.so
 *.png
+
 
 ###########
 
